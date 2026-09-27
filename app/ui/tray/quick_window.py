@@ -29,15 +29,24 @@ from PySide6.QtWidgets import (
 )
 
 import qtawesome as qta
+import shiboken6
 
 from app.core import settings_store, tray_store
 from app.core.jobs import JobExecutor
 from app.core.models import DeviceInfo, is_speaker
 from app.core.service import MijiaService
+from app.ui.cuktech_visuals import _PORT_COLORS
 from app.ui.power_button import PowerButton
 from app.ui.si_theme import SiColors
 from app.ui.tray.audio_bar import _TrayAudioBar
 from app.ui.typewriter import TypewriterPlaceholder
+
+
+def _port_power(entry: dict) -> float:
+    try:
+        return float(entry.get("power") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class TrayQuickWindow(QDialog):
@@ -57,6 +66,10 @@ class TrayQuickWindow(QDialog):
         self._sub_labels: dict[str, QLabel] = {}
         self._sub_widths: dict[str, int] = {}
         self._columns: int = settings_store.get_tray_columns()
+        # 托盘条目（含 span 占格）与 CUKTECH 实时状态缓存
+        self._tray_entries: list[dict] = []
+        self._cuktech_status: dict | None = None
+        self._cuktech_cards: dict[str, QFrame] = {}
 
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -200,7 +213,7 @@ class TrayQuickWindow(QDialog):
         self._outer_lay.addWidget(self._root)
         self.resize(300, 380)
         self.setMinimumSize(280, 360)
-        self._tray_dids: list[str] = tray_store.load()
+        self._tray_entries: list[dict] = tray_store.load_entries()
         # 呼出/隐藏动画与点击外部隐藏
         self._target_pos: QPoint | None = None
         self._show_anim: QParallelAnimationGroup | None = None
@@ -252,7 +265,7 @@ class TrayQuickWindow(QDialog):
         """由主窗口在设备列表刷新后调用，传入全量设备与开关记忆。"""
         self._devices = list(devices)
         self._known_power = dict(known_power)
-        self._tray_dids = tray_store.load()
+        self._tray_entries = tray_store.load_entries()
         self._update_audio_bar()
         self._update_voice_bar()
         if self.isVisible():
@@ -322,8 +335,11 @@ class TrayQuickWindow(QDialog):
             ah = self._audio_bar.sizeHint().height()
             audio_h = (ah if ah > 0 else 105) + 8  # 外层 spacing
         voice_h = 36 + 10 if not self._voice_frame.isHidden() else 0  # 36 + 间距10
-        # 根面板：标题 26 + 滚动区 242 + 上间距10 + 下间距10 + 内容边距 24
-        root_h = 26 + 242 + 24 + 20
+        # 根面板：标题 26 + 滚动区高 + 上间距10 + 下间距10 + 内容边距 24。
+        # 滚动区高度按可见 4 排估：普通行 56、大卡（span≥2 的 CUKTECH
+        # 实时卡）112，取可见前 4 卡的期望高求和，无卡时回落旧常量 242
+        scroll_h = self._estimate_scroll_height()
+        root_h = 26 + scroll_h + 24 + 20
         h = audio_h + root_h + voice_h
         from PySide6.QtGui import QGuiApplication
         screen = QGuiApplication.primaryScreen()
@@ -341,6 +357,34 @@ class TrayQuickWindow(QDialog):
             self.move(geo.x(), geo.y() - delta)
         else:
             self.resize(self.width(), h)
+
+    def _estimate_scroll_height(self) -> int:
+        """滚动区可见 4 排的期望高度（普通行 56 / 大卡 112，含间距）。
+
+        与 _rebuild 同一套占位规则：span 占多列时卡片所在行高取该行
+        卡片的最大高度——此处简化为按卡序号累加各自高度；大卡把整行
+        撑到 112，若同行还排了普通行，估值略高于实排（可接受，滚动区
+        实际由布局撑开，估值只决定窗口外框）。
+        """
+        entries = getattr(self, "_tray_entries", None) or []
+        heights: list[int] = []
+        lookup = {d.did: d for d in self._devices}
+        for entry in entries:
+            dev = lookup.get(entry["did"])
+            if dev is None:
+                continue
+            span = max(1, min(int(entry.get("span") or 1),
+                              max(self._columns, 1)))
+            is_cuktech = dev.source == "local" and dev.is_cuktech
+            large = span >= 2 and is_cuktech
+            heights.append(112 if large else 56)
+            if len(heights) >= 4:
+                break
+        if not heights:
+            return 242  # 旧常量：4×56 + 3×6
+        while len(heights) < 4:
+            heights.append(56)
+        return sum(heights) + 3 * 6
 
     def _emit_voice(self) -> None:
         text = self._voice_edit.text().strip()
@@ -474,18 +518,22 @@ class TrayQuickWindow(QDialog):
 
     def _rebuild(self) -> None:
         self._destroy_grid()
-        dids = getattr(self, "_tray_dids", None)
-        if dids is None:
-            dids = self._tray_dids = tray_store.load()
-        if not dids:
+        entries = getattr(self, "_tray_entries", None)
+        if not entries:
+            entries = self._tray_entries = tray_store.load_entries()
+        if not entries:
             self._empty.show()
             self._scroll.hide()
             return
         self._empty.hide()
         self._scroll.show()
         lookup = {d.did: d for d in self._devices}
-        cards = [lookup[d] for d in dids if lookup.get(d)]
-        # 使用 QGridLayout + setColumnStretch 强制各列等宽，单卡也能保持列宽
+        cards = [lookup[e["did"]] for e in entries if lookup.get(e["did"])]
+        span_of = {e["did"]: max(1, min(int(e.get("span") or 1),
+                                        max(self._columns, 1)))
+                   for e in entries}
+        # 使用 QGridLayout + setColumnStretch 强制各列等宽，单卡也能保持列宽；
+        # span>1 的卡跨多列（rowspan/colspan 占位，跳过被占格子）
         cols = self._columns
         self._grid = QGridLayout()
         self._grid.setContentsMargins(0, 0, 0, 0)
@@ -493,14 +541,174 @@ class TrayQuickWindow(QDialog):
             self._grid.setColumnStretch(c, 1)
         self._grid.setHorizontalSpacing(6)
         self._grid.setVerticalSpacing(6)
-        for idx, dev in enumerate(cards):
-            row = self._make_row(dev)
-            self._grid.addWidget(row, idx // cols, idx % cols)
+        occupied: set[tuple[int, int]] = set()
+        row = 0
+        col = 0
+        for dev in cards:
+            span = max(1, min(span_of.get(dev.did, 1), cols))
+            # 跳到第一个能容纳 span 的空位
+            while (row, col) in occupied or col + span > cols:
+                col += 1
+                if col >= cols:
+                    row += 1
+                    col = 0
+            widget = self._make_card(dev, span >= 2)
+            self._grid.addWidget(widget, row, col, 1, span)
+            for cc in range(col, col + span):
+                occupied.add((row, cc))
+            col += span
+            if col >= cols:
+                row += 1
+                col = 0
         self._list_lay.addLayout(self._grid)
         self._list_lay.addStretch(1)
-        online_dids = [d for d in dids if lookup.get(d) and lookup[d].online and self._known_power.get(d) is None]
+        online_dids = [d.did for d in cards
+                       if d.online and self._known_power.get(d.did) is None]
         if online_dids:
             self.refresh_power(online_dids)
+
+    def _make_card(self, dev: DeviceInfo, large: bool) -> QFrame:
+        """托盘设备卡：普通半宽行（span=1）或 CUKTECH 实时大卡（span≥2）。
+
+        span≥2 的卡有空间展示实时数据：CUKTECH 充电器画总功率大字 +
+        四口功率行，随 SSE 推送/状态快照刷新；其余设备维持文本行。
+        """
+        is_cuktech = dev.source == "local" and dev.is_cuktech
+        if large and is_cuktech:
+            return self._make_cuktech_card(dev)
+        return self._make_row(dev)
+
+    # ---------- CUKTECH 实时大卡（span≥2） ----------
+
+    def _make_cuktech_card(self, dev: DeviceInfo) -> QFrame:
+        """CUKTECH 充电器大卡：设备名 + 总功率大字 + 四口功率行。
+
+        数据入口 set_cuktech_status / push_cuktech_port（controller
+        转发主窗口 SSE），呼出时无推送则由 controller 兜底拉一次快照。
+        口径与 CuktechHoverPopup 一致：connected=False 显示 "-- W"
+        （BLE 断开时端口数据是残留旧值）。
+        """
+        card = QFrame()
+        card.setObjectName("trayRow")
+        card.setAttribute(Qt.WA_StyledBackground, True)
+        card.setFixedHeight(112)
+        card.setStyleSheet(
+            f"QFrame#trayRow {{ background: {SiColors.CARD}; border: 1px solid {SiColors.LINE}; border-radius: 10px; }}"
+            f"QFrame#trayRow:hover {{ background: {SiColors.CARD_HOVER}; border-color: {SiColors.CARD_BORDER_HOVER}; }}")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(2)
+
+        # 标题行：设备名 + 离线/在线态
+        name = QLabel(dev.name)
+        name.setFont(QFont("Microsoft YaHei UI", 10, QFont.Weight.DemiBold))
+        name.setStyleSheet(
+            f"color: {SiColors.TEXT_PRIMARY if dev.online else SiColors.OFFLINE_TEXT};"
+            " background: transparent;")
+        lay.addWidget(name)
+
+        # 总功率大字
+        total_val = QLabel("-- W")
+        total_val.setFont(
+            QFont("Microsoft YaHei UI", 15, QFont.Weight.DemiBold))
+        total_val.setStyleSheet(
+            f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
+        lay.addWidget(total_val)
+
+        # 四口功率行：C1/C2/C3/A 圆点 + 值（CuktechHoverPopup 同口径）
+        ports_row = QHBoxLayout()
+        ports_row.setSpacing(8)
+        port_labels: dict[int, QLabel] = {}
+        for port_id in (1, 2, 3, 4):
+            col = QHBoxLayout()
+            col.setSpacing(3)
+            dot = QLabel()
+            dot.setFixedSize(6, 6)
+            dot.setStyleSheet(
+                f"background: {_PORT_COLORS[port_id - 1]}; border-radius: 3px;")
+            val = QLabel("--")
+            val.setFont(QFont("Microsoft YaHei UI", 8))
+            val.setStyleSheet(
+                f"color: {SiColors.TEXT_SECONDARY}; background: transparent;")
+            col.addWidget(dot)
+            col.addWidget(val)
+            container = QWidget()
+            container.setLayout(col)
+            container.setStyleSheet("background: transparent;")
+            ports_row.addWidget(container, stretch=1)
+            port_labels[port_id] = val
+        lay.addLayout(ports_row)
+
+        card._did = dev.did  # type: ignore[attr-defined]
+        card._power_btn = None  # type: ignore[attr-defined]
+        card._total_label = total_val  # type: ignore[attr-defined]
+        card._port_labels = port_labels  # type: ignore[attr-defined]
+        self._cuktech_cards[dev.did] = card
+        # 左键开详情，右键切换占格数（1/2 列，落盘并重建）
+        card.mousePressEvent = (
+            lambda e, d=dev.did: self.open_device_requested.emit(d)
+            if e.button() == Qt.LeftButton
+            else self._toggle_span(d) if e.button() == Qt.RightButton
+            else None)
+        card.setCursor(Qt.PointingHandCursor)
+        # 卡片建成即按缓存渲染，避免等下一帧推送才显示
+        self._render_cuktech_card(dev.did)
+        return card
+
+    def _toggle_span(self, did: str) -> None:
+        """右键切换设备占格（1↔2，≥3 的已存值回切到 1）；重建生效。"""
+        span = tray_store.span_of(did)
+        tray_store.set_span(did, 1 if span >= 2 else 2)
+        self._tray_entries = tray_store.load_entries()
+        self._rebuild()
+        # 恢复卡片实时数据与开关态（重建后缓存仍在，直接回填）
+        self.set_cuktech_status(self._cuktech_status or {})
+
+    def _render_cuktech_card(self, did: str) -> None:
+        """按缓存状态刷新指定 CUKTECH 大卡（无状态显示占位）。"""
+        card = self._cuktech_cards.get(did)
+        if card is None or not shiboken6.isValid(card):
+            return
+        status = self._cuktech_status or {}
+        connected = status.get("connected") is True
+        ports = status.get("ports") or {}
+        total = 0.0
+        if connected:
+            for entry in ports.values():
+                if isinstance(entry, dict):
+                    total += _port_power(entry)
+        card._total_label.setText(f"{total:.1f}W" if connected else "-- W")
+        for port_id, val in card._port_labels.items():
+            entry = ports.get(str(port_id))
+            if connected and isinstance(entry, dict):
+                val.setText(f"{_port_power(entry):.1f}W")
+            else:
+                val.setText("--")
+
+    def set_cuktech_status(self, payload: dict) -> None:
+        """SSE status / 兜底轮询快照入口（controller 转发）。"""
+        if not shiboken6.isValid(self):
+            return
+        self._cuktech_status = dict(payload) if isinstance(payload, dict) else None
+        for did in self._cuktech_cards:
+            self._render_cuktech_card(did)
+
+    def push_cuktech_port(self, payload: dict) -> None:
+        """SSE port_update 单口增量合并（cuktech_hover 同款合并逻辑）。"""
+        if not shiboken6.isValid(self):
+            return
+        data = payload.get("data")
+        port_id = payload.get("port_id")
+        if not isinstance(data, dict) or not isinstance(port_id, int):
+            return
+        status = dict(self._cuktech_status or {})
+        ports = dict(status.get("ports") or {})
+        ports[str(port_id)] = data
+        status["ports"] = ports
+        status["connected"] = True  # 推送本身即在线证据
+        self._cuktech_status = status
+        for did in self._cuktech_cards:
+            self._render_cuktech_card(did)
 
     def _destroy_grid(self) -> None:
         grid = getattr(self, "_grid", None)
@@ -521,6 +729,7 @@ class TrayQuickWindow(QDialog):
         self._grid = None
         self._sub_labels.clear()
         self._sub_widths.clear()
+        self._cuktech_cards.clear()
         # 移除多余的 stretch
         for i in range(self._list_lay.count() - 1, -1, -1):
             item = self._list_lay.itemAt(i)
@@ -611,7 +820,12 @@ class TrayQuickWindow(QDialog):
         row._did = dev.did  # type: ignore[attr-defined]
         row._power_btn = btn  # type: ignore[attr-defined]
 
-        row.mousePressEvent = lambda e, d=dev.did: self.open_device_requested.emit(d) if e.button() == Qt.LeftButton else None
+        # 左键开详情，右键切换占格数（1↔2）
+        row.mousePressEvent = (
+            lambda e, d=dev.did: self.open_device_requested.emit(d)
+            if e.button() == Qt.LeftButton
+            else self._toggle_span(d) if e.button() == Qt.RightButton
+            else None)
         row.setCursor(Qt.PointingHandCursor)
         return row
 
@@ -622,14 +836,16 @@ class TrayQuickWindow(QDialog):
 
     def show_near_tray(self) -> None:
         """在托盘附近或屏幕右下角显示，显示前重建以保证与托盘存储一致。"""
-        self._tray_dids = tray_store.load()
+        self._tray_entries = tray_store.load_entries()
         self._rebuild()
         # 顶部音频栏与语音输入条显隐需在计算弹出位置前确定，以便窗口高度正确
         self._update_audio_bar()
         self._update_voice_bar()
         # 托盘内的温湿度设备在显示时补拉一次读数，确保副标题及时带上温湿度
         try:
-            dids = [d for d in self._tray_dids if self._metrics.get(d) is None]
+            dids = [d.did for d in self._devices
+                    if d.did in {e["did"] for e in self._tray_entries}
+                    and self._metrics.get(d.did) is None]
             if dids:
                 self._jobs.submit(
                     lambda: self._service.read_metrics(dids),

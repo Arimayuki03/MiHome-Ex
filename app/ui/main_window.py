@@ -39,9 +39,11 @@ import qtawesome as qta
 
 from app.core import cache as device_cache
 from app.core import icon_store
+from app.core.cuktech_events import CuktechEventStream
 from app.core.jobs import JobExecutor
 from app.core.models import DeviceInfo, is_speaker
 from app.core.service import MijiaService
+from app.ui.cuktech_panel import CuktechDeviceCard, CuktechPanel
 from app.ui.device_card import DeviceCard
 from app.ui.device_dialog import DeviceDetailDialog
 from app.ui.si_theme import SiColors, themed_tab_button
@@ -58,6 +60,11 @@ _ALL_HOMES = "全部"
 # 外部（APP/语音）改状态后卡片靠轮询跟随；批量读一次请求
 _POLL_INTERVAL_MS = 5_000
 _METRICS_INTERVAL_MS = 5 * 60 * 1000
+
+# CUKTECH SSE 断开消抖窗口（秒）：断开广播延迟这么久才灰置 UI，
+# 覆盖服务端 120s 硬超时 → 客户端 2s 起步退避重连的常态抖动
+# （初值 2s + 轮询一拍余量；真离线场景 5s 后 UI 如实转灰）。
+_CUKTECH_STREAM_DOWN_GRACE_S = 5
 
 
 def _refresh_summary(total: int, added: int, removed: int) -> str:
@@ -106,7 +113,10 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(760, 520)
 
         self._all_devices: list[DeviceInfo] = []
-        self._cards: dict[str, DeviceCard] = {}
+        # did -> 卡片：通用 DeviceCard 与 CUKTECH 专用卡共用（两者对
+        # 主窗口暴露 set_power_state/set_metrics/set_icon/set_busy/device
+        # 同名接口与 power_clicked/open_requested 信号）
+        self._cards: dict[str, DeviceCard | CuktechDeviceCard] = {}
         self._homes: list[str] = []
         self._current_home: str = ""
         self._current_room = _ALL_ROOMS
@@ -121,6 +131,17 @@ class MainWindow(QMainWindow):
         self._loading_devices = False
         # 启动自动检查更新每次进程只做一次，避免 start 被重复触发
         self._update_check_done = False
+        # CUKTECH SSE 实时事件流（ADR-004：推送优先、轮询兜底）：
+        # 单实例由窗口创建并持有（独立 QThread，绝不进 jobs 串行队列）。
+        # 懒启动——首次出现 CUKTECH 卡片或打开详情面板才 start（幂等）；
+        # connected_changed(False) 不 stop，模块内部指数退避自动重连。
+        # 服务地址与 cuktech_client 的默认值一致（本机 8199）
+        self._cuktech_stream: CuktechEventStream | None = None
+        # SSE 断开消抖定时器（_ensure_cuktech_stream 建流时一并创建；
+        # 字段先占位，_stop_cuktech_stream 在从未建流时也能安全判空）
+        self._cuktech_stream_down_timer: QTimer | None = None
+        # 当前打开中的 CUKTECH 详情面板（弱引用风格登记，判活后投递推送）
+        self._open_cuktech_panels: list[CuktechPanel] = []
         # 轮询防重入：上一轮批量读取未返回时跳过本轮定时触发
         self._poll_in_flight = False
         # 网格重排防抖：拖动窗口会触发密集 resizeEvent，全部重建
@@ -150,6 +171,8 @@ class MainWindow(QMainWindow):
         self._metrics_timer.setInterval(_METRICS_INTERVAL_MS)
         self._metrics_timer.timeout.connect(self._refresh_metrics)
         self._metrics_timer.timeout.connect(self._push_tray_metrics)
+        # CUKTECH SSE 流此处不创建不启动：首次出现 CUKTECH 卡片/面板时
+        # 经 _maybe_start_cuktech_stream 懒创建+懒启动（信号在其构造时接线）
 
         # 右下角小爱语音悬浮球：设备列表里存在小爱音箱才显示
         self._voice_fab = VoiceFab(self)
@@ -318,7 +341,8 @@ class MainWindow(QMainWindow):
         dlg = self._settings_dialog
         if dlg is not None and shiboken6.isValid(dlg) and dlg.isVisible():
             dlg.retheme()
-        # 托盘独立打开的详情对话框（即用即建，但开着时切主题需重建）
+        # 托盘独立打开的详情对话框（即用即建，但开着时切主题需重建）；
+        # CUKTECH 详情面板经对话框 retheme 级联刷新，无需单独处理
         from PySide6.QtWidgets import QApplication
         from app.ui.device_dialog import DeviceDetailDialog
         for w in QApplication.topLevelWidgets():
@@ -832,6 +856,175 @@ class MainWindow(QMainWindow):
             f'&nbsp;<span style="color:{SiColors.TEXT_MUTED}">{online} 台在线</span>'
         )
 
+    # ---------- CUKTECH SSE 实时事件流 ----------
+
+    def _ensure_cuktech_stream(self) -> CuktechEventStream:
+        """获取（必要时创建）SSE 事件流单实例，并接好全部信号。
+
+        创建不等于启动：start 由 _maybe_start_cuktech_stream 一并触发
+        （幂等）。本方法可重复调用，已存在时只返回实例。流的服务地址
+        跟随 service 注入的客户端（CuktechClient 未暴露只读属性，取其
+        _base_url，缺失时回退默认值，保证 SSE 与轮询打向同一网关服务）。
+        """
+        if self._cuktech_stream is not None:
+            return self._cuktech_stream
+        base_url = getattr(self._service.cuktech, "_base_url",
+                           "http://127.0.0.1:8199")
+        stream = CuktechEventStream(base_url=base_url)
+        stream.connected_changed.connect(self._on_cuktech_connected)
+        stream.status_event.connect(self._on_cuktech_status)
+        stream.port_event.connect(self._on_cuktech_port)
+        stream.settings_event.connect(self._on_cuktech_settings)
+        # protocol/quality/session_end/init 事件走 generic 通路：分发给
+        # 打开中面板（协议开关页即时校准 / 连接质量卡直喂 / 历史统计节流
+        # 刷新）；init 额外用于重连后全量状态恢复（服务端每次连接建立
+        # 都先推一条 init 完整快照）。
+        stream.generic_event.connect(self._on_cuktech_generic)
+        # SSE 断开消抖定时器：服务端中间件对 /api/events 有 120s 硬超时，
+        # 流每约 2 分钟必被掐断一次（常态而非故障），模块 2s 起步退避重连。
+        # 断开不立刻灰置 UI——等 5s 仍未重连成功才广播离线；120s 掐断
+        # → 2s 重连的常态抖动因此完全不闪断。
+        self._cuktech_stream_down_timer = QTimer(self)
+        self._cuktech_stream_down_timer.setSingleShot(True)
+        self._cuktech_stream_down_timer.setInterval(
+            _CUKTECH_STREAM_DOWN_GRACE_S * 1000)
+        self._cuktech_stream_down_timer.timeout.connect(
+            self._apply_cuktech_stream_down)
+        self._cuktech_stream = stream
+        return stream
+
+    def _maybe_start_cuktech_stream(self) -> None:
+        """懒创建+懒启动 SSE 流：首次需要实时数据的场景调用（幂等）。
+
+        推迟创建的另一原因：流的服务地址取自 service.cuktech 的客户端，
+        必须等测试/运行期完成 service 注入后再建，避免绑错端口。
+        """
+        stream = self._ensure_cuktech_stream()
+        # start 内部幂等：线程已运行直接返回；断开后无需 stop（自动重连）
+        stream.start()
+
+    def _on_cuktech_connected(self, connected: bool) -> None:
+        """SSE 通道建立/断开：卡片在线点即时反馈（断开消抖后再灰置）。
+
+        流断开是服务端 120s 硬超时下的常态（模块内部指数退避自动重连，
+        2s 起步），不立刻灰置卡片——启动 5s 消抖定时器，期间重连成功
+        （connected True 或任何事件到达）就取消；真离线 5s 后如实转灰。
+        """
+        if connected:
+            if self._cuktech_stream_down_timer is not None:
+                self._cuktech_stream_down_timer.stop()
+            self._apply_cuktech_stream_up()
+            return
+        if (self._cuktech_stream_down_timer is not None
+                and not self._cuktech_stream_down_timer.isActive()):
+            self._cuktech_stream_down_timer.start()
+
+    def _apply_cuktech_stream_up(self) -> None:
+        """SSE 流可用：卡片/面板在线点恢复（数据由推送与轮询刷新）。"""
+        for card in self._cards.values():
+            if not shiboken6.isValid(card):
+                continue
+            if isinstance(card, CuktechDeviceCard):
+                card.set_stream_connected(True)
+        for panel in list(self._open_cuktech_panels):
+            if not shiboken6.isValid(panel):
+                self._open_cuktech_panels.remove(panel)
+                continue
+            panel.set_stream_connected(True)
+
+    def _apply_cuktech_stream_down(self) -> None:
+        """SSE 流超过消抖窗口仍未恢复：卡片/面板离线灰置。"""
+        for card in self._cards.values():
+            if not shiboken6.isValid(card):
+                continue
+            if isinstance(card, CuktechDeviceCard):
+                card.set_stream_connected(False)
+        for panel in list(self._open_cuktech_panels):
+            if not shiboken6.isValid(panel):
+                self._open_cuktech_panels.remove(panel)
+                continue
+            panel.set_stream_connected(False)
+
+    def _on_cuktech_status(self, payload: dict) -> None:
+        """SSE status 全量状态：刷新可见卡片与打开中的面板。
+
+        推送只更新 UI 展示，不回写 service 缓存。
+        """
+        for card in self._cards.values():
+            if not shiboken6.isValid(card):
+                continue
+            if isinstance(card, CuktechDeviceCard):
+                card.push_status(payload)
+        self._push_to_open_panels("push_status", payload)
+        # 托盘悬停弹窗：仅弹窗可见时才喂数（转发入口内部自带可见性判断）
+        if getattr(self, "_tray", None) is not None:
+            self._tray.push_cuktech_status(payload)
+
+    def _on_cuktech_port(self, payload: dict) -> None:
+        """SSE port_update 单口实时数据（约 1 秒一条）：刷新功率展示。"""
+        for card in self._cards.values():
+            if not shiboken6.isValid(card):
+                continue
+            if isinstance(card, CuktechDeviceCard):
+                card.push_port_status(payload)
+        self._push_to_open_panels("push_port_status", payload)
+        if getattr(self, "_tray", None) is not None:
+            self._tray.push_cuktech_port(payload)
+
+    def _on_cuktech_settings(self, payload: dict) -> None:
+        """SSE settings 设置变化：刷新面板的端口开关位/限额显示。"""
+        self._push_to_open_panels("push_settings", payload)
+
+    def _on_cuktech_generic(self, event_type: str, payload: dict) -> None:
+        """SSE 其余类型事件的分发点。
+
+        type=="init"（服务端每次连接建立即推的全量快照，重连后必达）
+        按全量状态帧处理——既刷卡片/面板，也取消断开消抖（重连成功
+        的最强证据）；type=="protocol"（PIID 21 协议开关位图变化）投递
+        给打开中面板的 push_protocol（协议开关页 apply_protocol_event
+        即时校准）；type=="quality"（链路质量评分，约 5s 一条）投递
+        push_quality（设备设置 Tab 连接质量卡整帧直喂）；
+        type=="session_end"（单口充电会话结束）投递 on_session_end
+        （历史/统计页 5s 节流刷新，对齐上游报告 §3.4）；其余类型暂无
+        对应 UI，仅留调试日志。
+        """
+        if event_type == "init":
+            # init 是重连成功的最强证据：先撤消抖，再走全量刷新
+            if self._cuktech_stream_down_timer is not None:
+                self._cuktech_stream_down_timer.stop()
+            self._apply_cuktech_stream_up()
+            self._on_cuktech_status(payload)
+        elif event_type == "protocol":
+            self._push_to_open_panels("push_protocol", payload)
+        elif event_type == "quality":
+            self._push_to_open_panels("push_quality", payload)
+        elif event_type == "session_end":
+            self._push_to_open_panels("on_session_end", payload)
+        else:
+            logger.debug("CUKTECH SSE 事件 type=%s keys=%s",
+                         event_type, sorted(payload))
+
+    def _push_to_open_panels(self, method: str, payload: dict) -> None:
+        """把推送投递给打开中的 CUKTECH 面板（判活，顺带清理死引用）。"""
+        for panel in list(self._open_cuktech_panels):
+            if not shiboken6.isValid(panel):
+                self._open_cuktech_panels.remove(panel)
+                continue
+            getattr(panel, method)(payload)
+
+    def _stop_cuktech_stream(self) -> None:
+        """停止 SSE 流并回收线程（仅窗口真实退出路径调用）。
+
+        stop() 会广播 connected_changed(False) 启动消抖定时器；窗口正在
+        销毁，一并停掉定时器避免退出阶段再触发灰置刷新。
+        """
+        if self._cuktech_stream_down_timer is not None:
+            self._cuktech_stream_down_timer.stop()
+        if self._cuktech_stream is not None:
+            self._cuktech_stream.stop()
+            self._cuktech_stream = None
+        self._open_cuktech_panels.clear()
+
     def _on_poll_tick(self) -> None:
         if self._poll_in_flight or not self._all_devices:
             return
@@ -844,8 +1037,10 @@ class MainWindow(QMainWindow):
         force=True 忽略记忆全量重读（定时轮询）。
         离线设备的云端返回值是最后一次在线时的缓存，不可信，跳过。
         """
-        # 以 DeviceInfo.online 为准：离线设备的云端开关值不可信
-        dids = [d.did for d in self._visible_devices() if d.online]
+        # 以 DeviceInfo.online 为准：离线设备的云端开关值不可信；
+        # 本地源设备（CUKTECH）不经米家云端 spec 链路，由专用卡片自轮询
+        dids = [d.did for d in self._visible_devices()
+                if d.online and d.source != "local"]
         if not dids:
             return
         if not force:
@@ -895,7 +1090,7 @@ class MainWindow(QMainWindow):
         """
         dids = [
             d.did for d in self._visible_devices()
-            if self._known_power.get(d.did) is None
+            if self._known_power.get(d.did) is None and d.source != "local"
         ]
         if not dids:
             return
@@ -1078,18 +1273,25 @@ class MainWindow(QMainWindow):
         self._grid_columns = cols
         rows = (len(visible) + cols - 1) // cols
         for index, device in enumerate(visible):
-            card = DeviceCard(device)
-            # 记忆里的开关状态与读数立即回显，重建卡片不丢状态
-            known = self._known_power.get(device.did)
-            if known is not None:
-                card.set_power_state(known)
-            if device.did in self._metrics:
-                card.set_metrics(self._metrics.get(device.did))
-            # 已下载的图标从本地文件回填：主题/tab 切换重建卡片后
-            # 图标不消失；未下载的由 _load_card_icons 后台补齐
-            path = icon_store.icon_path(device.model)
-            if path.is_file():
-                card.set_icon(path)
+            # 本地 CUKTECH 充电器走专用卡片（自带状态轮询与总功率展示），
+            # 不参与云端开关探测/温湿度读数/图标回填路径
+            if device.source == "local" and device.is_cuktech:
+                card = CuktechDeviceCard(device, self._service, self._jobs)
+                # 首次出现充电器卡片：懒启动 SSE 实时流（幂等）
+                self._maybe_start_cuktech_stream()
+            else:
+                card = DeviceCard(device)
+                # 记忆里的开关状态与读数立即回显，重建卡片不丢状态
+                known = self._known_power.get(device.did)
+                if known is not None:
+                    card.set_power_state(known)
+                if device.did in self._metrics:
+                    card.set_metrics(self._metrics.get(device.did))
+                # 已下载的图标从本地文件回填：主题/tab 切换重建卡片后
+                # 图标不消失；未下载的由 _load_card_icons 后台补齐
+                path = icon_store.icon_path(device.model)
+                if path.is_file():
+                    card.set_icon(path)
             card.power_clicked.connect(self._on_power_clicked)
             card.open_requested.connect(self._on_open_device)
             self._cards[device.did] = card
@@ -1189,6 +1391,15 @@ class MainWindow(QMainWindow):
         if card is None:
             return
         card.set_busy(True)
+        # CUKTECH 充电器的总开关走本地 BLE 门面，不经米家云端 spec 链路
+        if isinstance(card, CuktechDeviceCard):
+            self._jobs.submit(
+                lambda: self._service.cuktech_toggle_total(not card.output_on),
+                on_success=lambda new_state, c=card, d=did:
+                    self._on_power_done(c, d, new_state),
+                on_error=lambda err, c=card: self._on_power_failed(c, err),
+            )
+            return
         self._jobs.submit(
             lambda: self._service.toggle_power(did),
             on_success=lambda new_state, c=card, d=did:
@@ -1196,7 +1407,8 @@ class MainWindow(QMainWindow):
             on_error=lambda err, c=card: self._on_power_failed(c, err),
         )
 
-    def _on_power_done(self, card: DeviceCard, did: str, new_state: bool) -> None:
+    def _on_power_done(self, card: DeviceCard | CuktechDeviceCard,
+                       did: str, new_state: bool) -> None:
         # 卡片可能在任务排队期间随网格重建被销毁，回调前先确认存活
         if not shiboken6.isValid(card):
             return
@@ -1208,7 +1420,8 @@ class MainWindow(QMainWindow):
             self, f"已{'打开' if new_state else '关闭'}「{card.device.name}」", 2500
         )
 
-    def _on_power_failed(self, card: DeviceCard, error: Exception) -> None:
+    def _on_power_failed(self, card: DeviceCard | CuktechDeviceCard,
+                         error: Exception) -> None:
         if not shiboken6.isValid(card):
             return
         card.set_busy(False)
@@ -1220,13 +1433,36 @@ class MainWindow(QMainWindow):
         device = next((d for d in self._all_devices if d.did == did), None)
         if device is None:
             return
-        dialog = DeviceDetailDialog(self._service, self._jobs, device, self)
+        is_cuktech = device.source == "local" and device.is_cuktech
+        if is_cuktech:
+            # CUKTECH 充电器不经米家 spec 工作台：经 panel_factory 把
+            # 专用面板装进同一遮罩壳，遮罩/淡入淡出/关闭钮全部复用
+            def _make_cuktech_panel(parent):
+                return CuktechPanel(self._service, self._jobs, device, parent)
+
+            dialog = DeviceDetailDialog(
+                self._service, self._jobs, device, self,
+                panel_factory=_make_cuktech_panel)
+            # 打开面板同样需要实时流；登记面板接收推送（关闭时注销）
+            self._maybe_start_cuktech_stream()
+            self._open_cuktech_panels.append(dialog.panel)
+        else:
+            dialog = DeviceDetailDialog(self._service, self._jobs, device, self)
         # 详情内取到温湿度后直接回写卡片与缓存（手动刷新的即时反馈）
         dialog.panel.metrics_updated.connect(self._on_detail_metrics)
         dialog.load()
         dialog.exec()
         dialog.panel.metrics_updated.disconnect(self._on_detail_metrics)
         dialog.deleteLater()
+        if is_cuktech:
+            # 详情关闭：面板移出推送投递名单（对象随后 deleteLater 销毁）
+            try:
+                self._open_cuktech_panels.remove(dialog.panel)
+            except ValueError:
+                pass
+            # 充电器卡片自带状态轮询，详情期间的改动由轮询自行回填；
+            # 不走云端开关回读（spec 链路对本地设备无意义）
+            return
         # 详情期间可能在面板里改过开关，关闭后读一次回填卡片；
         # 无开关能力的设备返回 None 直接跳过
         if did in self._cards:
@@ -1263,6 +1499,9 @@ class MainWindow(QMainWindow):
                 self._tray._tray.hide()
             except Exception:
                 pass
+        # SSE 常驻线程必须先于窗口销毁停掉（隐藏到托盘的分支不停流，
+        # 推送继续为下次唤出保温数据）
+        self._stop_cuktech_stream()
         self._jobs.shutdown()
         super().closeEvent(event)
         # quitOnLastWindowClosed 为 False（托盘常驻需要），关闭窗口不会自动

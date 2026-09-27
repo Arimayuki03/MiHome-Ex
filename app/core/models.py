@@ -8,6 +8,10 @@ core.service 适配层，界面层永远只依赖这里的稳定类型。
 """
 
 from dataclasses import dataclass
+from typing import Literal
+
+# 设备来源：cloud=米家云端（mijiaAPI 拉取），local=本地服务（如 CUKTECH 充电器 BLE 网关）
+DeviceSource = Literal["cloud", "local"]
 
 
 @dataclass
@@ -20,6 +24,23 @@ class DeviceInfo:
     home_name: str
     room_name: str
     online: bool
+    # 设备来源，默认 cloud：旧构造点与旧缓存文件（缺 source 键）反序列化时不报错
+    source: DeviceSource = "cloud"
+
+    @property
+    def is_cuktech(self) -> bool:
+        """CUKTECH 充电器判定：本地源的功能面板、专用控件共用同一标准。
+
+        真机（2026-09-26）上报的 device_model 形如 "njcuk.fitting.ad1204_"，
+        既不含 "cuktech" 也不以 "cu" 开头，故按米家生态链型号特征匹配：
+        含 "njcuk" 或 "cuktech"（大小写不敏感）即归入充电器类别。
+        本地源（source="local"）的设备固定为充电器，不受型号脏数据影响
+        （真实 model 尾部可能带控制字符，如 "\\x03"）。
+        """
+        if self.source == "local":
+            return True
+        model = self.model.lower()
+        return "cuktech" in model or "njcuk" in model
 
 
 @dataclass

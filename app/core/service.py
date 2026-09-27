@@ -9,6 +9,10 @@
 依赖的上游半公开方法说明：扫码登录拆成 _get_qr_login_data 与
 _complete_qr_login 两步使用，是因为上游的 login() 会把二维码打印到
 终端，图形界面拿不到；官方 MCP server 也采用同样的两步组合。
+
+本类同时是「组合门面」：云端设备走 mijiaAPI，本地设备（CUKTECH
+充电器）经 cuktech_client 访问局域网 BLE 网关服务。端点知识只存在于
+cuktech_client 一个模块，界面层永远只面对本类。
 """
 
 import json
@@ -29,6 +33,7 @@ from mijiaAPI.devices import DevAction, DevProp
 from mijiaAPI.miutils import generate_enc_params, gen_nonce, get_signed_nonce
 
 from . import icon_store
+from .cuktech_client import CuktechClient, ServiceError as CuktechError
 from .models import ActionInfo, DeviceDetail, DeviceInfo, PropInfo
 
 logger = logging.getLogger(__name__)
@@ -37,6 +42,9 @@ logger = logging.getLogger(__name__)
 _BATCH_SIZE = 15
 # spec 并发拉取线程数；目标是 home.miot-spec.com 的独立请求，无会话竞争
 _SPEC_WORKERS = 8
+# 本地 CUKTECH 充电器在设备列表里的合成稳定 ID（非米家云端 did）：
+# 同一时刻本机至多一个网关服务实例，固定值即可充当界面主键
+_CUKTECH_LOCAL_DID = "cuktech-local"
 
 
 class ServiceError(Exception):
@@ -51,10 +59,20 @@ def _wrap_error(exc: Exception, context: str) -> ServiceError:
 
 
 class MijiaService:
-    def __init__(self):
+    def __init__(self, cuktech: CuktechClient | None = None,
+                 cuktech_base_url: str | None = None):
         # 认证文件沿用上游默认位置 ~/.config/mijia-api/auth.json，
         # 这样 CLI 里扫过的码在 GUI 直接生效，反之亦然
         self._api = self._init_api()
+        # 本地 CUKTECH 充电器客户端：默认连本机网关服务；测试可注入
+        # 自建实例（cuktech 优先于 cuktech_base_url）。项目没有现成的
+        # 服务地址配置机制，先只留构造参数，不新造配置系统
+        if cuktech is not None:
+            self._cuktech = cuktech
+        elif cuktech_base_url is not None:
+            self._cuktech = CuktechClient(base_url=cuktech_base_url)
+        else:
+            self._cuktech = CuktechClient()
         self._device_cache: dict[str, mijiaDevice] = {}
         # did -> (model, name) 索引，批量读状态与共享设备组装时
         # 避免反复拉设备列表；自有与共享设备都在其中
@@ -86,6 +104,15 @@ class MijiaService:
             logger.warning("认证文件损坏已隔离为 auth.json.corrupt，请重新扫码登录: %s", exc)
             # 文件已移除，上游按「无认证文件」处理，available 恒为 False
             return mijiaAPI()
+
+    @property
+    def cuktech(self) -> CuktechClient:
+        """本地 CUKTECH 充电器客户端（只读），供界面层与后续 SSE 通道使用。
+
+        仅暴露实例引用；设备控制请走本类的 cuktech_* 方法组（经 jobs
+        串行队列调用），保证与云端操作同一套错误与线程约定。
+        """
+        return self._cuktech
 
     # ---------- 登录 ----------
 
@@ -121,10 +148,17 @@ class MijiaService:
     # ---------- 设备列表 ----------
 
     def list_devices(self) -> list[DeviceInfo]:
-        """拉取全部家庭和共享设备并补齐房间归属。
+        """拉取全部家庭和共享设备并补齐房间归属，聚合本地 CUKTECH 充电器。
 
-        设备信息本身不含房间字段，参照 CLI 的实现思路：
-        遍历每个家庭的 roomlist[].dids[] 反查出 did -> (家庭, 房间)。
+        云端部分参照 CLI 的实现思路：设备信息本身不含房间字段，遍历
+        每个家庭的 roomlist[].dids[] 反查出 did -> (家庭, 房间)。
+
+        聚合语义：当本地 BLE 网关服务可达且设备蓝牙在线
+        （cuktech.connected()，任何失败已折叠为 False）时，在列表尾部
+        追加一台 ``source="local"`` 的设备，did 是固定合成的
+        ``cuktech-local``（非米家云端 did，仅作界面主键）。网关不可达
+        时静默跳过本地设备不抛错——设备列表加载失败是模态错误，而
+        本地充电器缺席只是列表里少一张卡片。
         """
         try:
             homes = self._api.get_homes_list()
@@ -149,8 +183,51 @@ class MijiaService:
                 home_name=home_name,
                 room_name=room_name,
                 online=bool(d.get("isOnline", False)),
+                source="cloud",
             ))
-        return sorted(result, key=lambda x: (x.home_name, x.room_name, x.name))
+        result.sort(key=lambda x: (x.home_name, x.room_name, x.name))
+
+        local = self._cuktech_device()
+        if local is not None:
+            result.append(local)
+        return result
+
+    def _cuktech_device(self) -> DeviceInfo | None:
+        """组装本地 CUKTECH 充电器的设备条目；网关不可达时返回 None。
+
+        /api/status 的 device_model 同时充当型号与设备名（契约里没有
+        独立的设备名字段）；model 非空才视为有效，否则仍按不可达
+        处理。
+        """
+        if not self.cuktech.connected():
+            return None
+        try:
+            status = self.cuktech.status()
+        except CuktechError as exc:
+            # connected() 与 status() 之间服务恰好下线的窄竞态：
+            # 与整体语义一致，静默跳过本地设备
+            logger.debug("CUKTECH 状态读取失败，跳过本地设备: %s", exc)
+            return None
+        model = str(status.get("device_model") or "")
+        if not model:
+            return None
+        # 真机上报的型号尾部可能带控制字符（如 "njcuk.fitting.ad1204_\x03"），
+        # 存入 model 前清理，避免卡片/日志里出现乱码
+        model = "".join(ch for ch in model if ch.isprintable())
+        if not model:
+            return None
+        # 契约里没有独立的设备名字段；真机型号（njcuk.fitting.ad1204_）
+        # 是内部编码不可读，显示名固定用「CUKTECH 充电器」
+        name = "CUKTECH 充电器"
+        return DeviceInfo(
+            did=_CUKTECH_LOCAL_DID,
+            name=name,
+            model=model,
+            home_name="本地",
+            room_name="本地",
+            online=True,
+            source="local",
+        )
 
     # ---------- 设备控制 ----------
 
@@ -310,6 +387,151 @@ class MijiaService:
             act["name"]: DevAction(act) for act in dev_info.get("actions", [])
         }
         return dev
+
+    # ---------- 本地 CUKTECH 充电器（组合门面转发） ----------
+
+    @staticmethod
+    def _cuktech_call(fn, *args, **kwargs):
+        """执行一个 CuktechClient 调用并统一异常出口。
+
+        CuktechClient 抛的 ServiceError 已是用户可读的中文，原样转换
+        为本模块的 ServiceError 透传（两个同名异常类语义一致，但界面
+        层只 import service.ServiceError）；其余意外异常按现有约定用
+        _wrap_error 包装。方法本身纯同步，由调用方经 jobs 串行队列提交。
+        """
+        try:
+            return fn(*args, **kwargs)
+        except CuktechError as exc:
+            raise ServiceError(str(exc)) from exc
+        except Exception as exc:
+            raise _wrap_error(exc, "充电器命令执行失败") from exc
+
+    def cuktech_status(self) -> dict:
+        """读取本地充电器全量状态快照（/api/status 原始 dict）。
+
+        ports 键是字符串 "1"-"4"（1=C1、2=C2、3=C3、4=USB-A），
+        connected 是蓝牙在线判定；失败抛中文 ServiceError。
+        """
+        return self._cuktech_call(self.cuktech.status)
+
+    def cuktech_toggle_total(self, on: bool) -> None:
+        """一键开关充电器全部四个端口。"""
+        self._cuktech_call(self.cuktech.set_port_enabled_all, bool(on))
+
+    def cuktech_set_port(self, port: int, on: bool) -> None:
+        """开关单个端口，port 为 int 1-4（1=C1、2=C2、3=C3、4=USB-A）。"""
+        self._cuktech_call(self.cuktech.set_port_enabled, port, bool(on))
+
+    def cuktech_charge_limits(self) -> dict:
+        """读取充电量限额与各口会话进度；limits 键已规整为 int 1-4。
+
+        每项含 wh（限额，0=禁用）/mode/fired/session_wh（本会话已输出
+        能量，可当充电进度用）/is_charging。
+        """
+        return self._cuktech_call(self.cuktech.charge_limits)
+
+    def cuktech_set_charge_limit(self, port: int, wh: float,
+                                 mode: str = "once") -> None:
+        """设置单端口充电量限额（Wh，充电器输出能量口径，<=0 禁用）。
+
+        mode 为 "once"（达到即关断并清零）或 "always"（每次充电会话
+        重新武装），转发 /api/charge-limits 的 mode 字段。
+        """
+        self._cuktech_call(self.cuktech.set_charge_limit, port, wh, mode)
+
+    def cuktech_chart(self, hours: float = 1.0, interval: int = 30) -> dict:
+        """读取功率图表数据（labels + datasets），hours 为时间窗小时数。
+
+        interval 为桶宽秒数（上游 chart-config.js HISTORY_INTERVALS：
+        30/60 分档 20、120 分档 30、24 小时档 300），经请求透传。
+        """
+        return self._cuktech_call(self.cuktech.chart, hours, interval)
+
+    def cuktech_sessions(self, port: int | None, period: str,
+                         limit: int, page: int) -> dict:
+        """分页读取充电会话历史（/api/sessions 原始 dict）。
+
+        port 为对外 int 1-4 或 None=全部端口；period 取 today /
+        yesterday / week / month（week、month 为滚动 7/30 天）；
+        limit 每页条数（服务端钳到最大 50）；page 从 1 起。返回体含
+        sessions/total/page/limit/pages，每条会话的 port 是 int 1-4。
+        """
+        return self._cuktech_call(self.cuktech.sessions, port, period,
+                                  limit, page)
+
+    def cuktech_session_points(self, session_id: int,
+                               downsample: int = 0) -> dict | None:
+        """读取单次会话的电压/电流/功率点列（downsample=目标点数）。
+
+        downsample 透传服务端 LTTB 降采样的目标点数（0 或省略=全部
+        点；点数多于目标才截）；会话不存在返回 None（404 按"查不到"
+        语义处理），其余错误抛中文 ServiceError。
+        """
+        return self._cuktech_call(self.cuktech.session_points,
+                                  session_id, downsample)
+
+    def cuktech_energy_stats(self, period: str = "today") -> dict:
+        """读取分时段电量统计（服务端已合并进行中会话）。
+
+        返回体含 total_wh/session_count/avg_power_w/peak_power_w/
+        total_duration_sec/by_port（键为 int 1-4）。
+        """
+        return self._cuktech_call(self.cuktech.energy_stats, period)
+
+    def cuktech_energy_protocols(self, period: str = "today") -> dict:
+        """读取按快充协议聚合的电量统计分布（protocols 数组）。"""
+        return self._cuktech_call(self.cuktech.energy_protocols, period)
+
+    def cuktech_export_session_csv(self, session_id: int,
+                                   save_path: str | Path) -> Path:
+        """下载单次会话 CSV 到本地文件（/api/sessions/{id}/export）。
+
+        save_path 传文件路径原样落盘、传已存在的目录则自动补文件名；
+        返回最终写入路径。服务端错误转中文 ServiceError。
+        """
+        return self._cuktech_call(self.cuktech.export_session_csv,
+                                  session_id, save_path)
+
+    def cuktech_set_protocol_switch(self, port: int, protocol: str,
+                                    on: bool) -> None:
+        """设置单口协议开关（PIID 21）。port 为对外 int 1-4；protocol
+        取 "pd"/"pps"/"ufcs"/"scp"（须与端口能力匹配：C1/C2 无 scp、
+        C3/A 无 pd/pps）；on 为 True=开启/False=关闭。
+        """
+        self._cuktech_call(self.cuktech.set_protocol_switch, port,
+                           protocol, "on" if on else "off")
+
+    def cuktech_set_scene(self, mode: int) -> None:
+        """设置充电器模式：1=AI、2=数码生态、3=单口、4=均衡，非法值客户端本地拒绝。"""
+        self._cuktech_call(self.cuktech.set_scene, mode)
+
+    def cuktech_set_screen_timeout(self, value: int) -> None:
+        """设置息屏时间：1=5分钟、2=10分钟、3=30分钟、4=常亮、5=1分钟。"""
+        self._cuktech_call(self.cuktech.set_screen_timeout, value)
+
+    def cuktech_set_delay_off(self, port: int, minutes: int) -> None:
+        """设置单端口延时关闭：port 为 int 1-4，minutes 0-240（0=取消）。"""
+        self._cuktech_call(self.cuktech.set_delay_off, port, minutes)
+
+    def cuktech_set_delay_off_all(self, minutes: int) -> None:
+        """设置全部端口的总延时关闭分钟数（0-240，0=取消）。"""
+        self._cuktech_call(self.cuktech.set_delay_off_all, minutes)
+
+    def cuktech_set_device_language(self, chinese: bool) -> None:
+        """设置设备屏幕语言：True=中文，False=English。"""
+        self._cuktech_call(self.cuktech.set_device_language, bool(chinese))
+
+    def cuktech_set_usb_a_trickle(self, enabled: bool) -> None:
+        """开关 USB-A 口小电流（涓流）模式。"""
+        self._cuktech_call(self.cuktech.set_usb_a_trickle, bool(enabled))
+
+    def cuktech_set_idle_screen_off(self, enabled: bool) -> None:
+        """开关空闲自动息屏。"""
+        self._cuktech_call(self.cuktech.set_idle_screen_off, bool(enabled))
+
+    def cuktech_set_screen_lock(self, enabled: bool) -> None:
+        """开关屏幕方向锁（锁定当前方向不随摆放旋转）。"""
+        self._cuktech_call(self.cuktech.set_screen_lock, bool(enabled))
 
     # ---------- 开关状态（卡片快速控制用） ----------
 

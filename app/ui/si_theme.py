@@ -466,8 +466,15 @@ def sync_siui_colors() -> None:
 # ----------------------------------------------------------------------------
 
 def themed_switch() -> SiSwitchRefactor:
-    """bool 属性用的开关，开启态轨道为主题色。"""
+    """bool 属性用的开关，开启态轨道为主题色。
+
+    焦点策略 NoFocus：开关是纯点按控件，不参与键盘焦点链——保留
+    StrongFocus 时，点击嵌入 QScrollArea 的开关会使其拿走焦点，随后
+    服务确认回读触发的整帧重渲/布局微调会让 QScrollArea 为保焦点
+    自动滚动到该控件（真机上表现为「点 USB-A 开关页面自动下移」）。
+    """
     switch = SiSwitchRefactor()
+    switch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
     switch.style_data.background_color_starting = QColor(SiColors.THEME)
     switch.style_data.background_color_ending = QColor(SiColors.THEME)
     switch.style_data.thumb_color_checked = QColor(SiColors.SWITCH_THUMB)

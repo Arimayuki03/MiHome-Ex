@@ -3,14 +3,22 @@
 # Copyright (C) 2026 MiHome-Windows contributors
 """系统托盘控制器：常驻图标 + 菜单 + 快捷窗口编排。"""
 
-from PySide6.QtCore import QSize
-from PySide6.QtGui import QAction, QIcon
+import time
+
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer
+from PySide6.QtGui import QAction, QCursor, QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from app.core.jobs import JobExecutor
 from app.core.models import DeviceInfo
 from app.core.service import MijiaService
+from app.ui.tray.cuktech_hover import CuktechHoverPopup
 from app.ui.tray.quick_window import TrayQuickWindow
+
+# 托盘图标悬停判定：光标须连续停留在图标几何内该时长才弹数据
+_HOVER_DELAY_MS = 500
+# 弹窗可见期间的状态刷新周期（SSE 推送为主，此轮询兜底）
+_POPUP_POLL_MS = 2000
 
 
 class TrayController:
@@ -34,6 +42,23 @@ class TrayController:
         self._tray = QSystemTrayIcon(_tray_icon, main_window)
         self._tray.setToolTip("米家 - MiHome for Windows")
         self._tray.activated.connect(self._on_activated)
+
+        # ---- 悬停数据弹窗（CUKTECH 充电器四口功率 + 总功率） ----
+        # 托盘图标位于系统 Shell 区域，Qt 收不到其 enter/leave 事件；
+        # 以低频轮询光标是否落在 QSystemTrayIcon.geometry() 内判定悬停，
+        # 连续 _HOVER_DELAY_MS 才弹出，避免扫过任务栏即弹
+        self._hover_popup = CuktechHoverPopup()
+        self._hover_timer = QTimer(main_window)
+        self._hover_timer.setInterval(150)
+        self._hover_timer.timeout.connect(self._check_hover)
+        self._hover_timer.start()
+        self._hover_since_ms: float | None = None  # None=当前不在悬停
+        # 弹窗可见期间兜底拉状态；SSE 推送活络时由 main_window 喂数，
+        # 轮询照跑但读数幂等，代价可忽略
+        self._popup_poll_timer = QTimer(main_window)
+        self._popup_poll_timer.setInterval(_POPUP_POLL_MS)
+        self._popup_poll_timer.timeout.connect(self._poll_popup_status)
+        self._popup_poll_in_flight = False
 
         menu = QMenu()
         menu.setObjectName("appMenu")
@@ -106,12 +131,25 @@ class TrayController:
             if quick.isVisible() or quick.is_explicitly_visible():
                 quick.hide_animated()
             else:
-                quick.show_near_tray()
+                self._show_quick_with_status()
             return
         if quick.isVisible():
             quick.hide_animated()
         else:
-            quick.show_near_tray()
+            self._show_quick_with_status()
+
+    def _show_quick_with_status(self) -> None:
+        """呼出快捷窗口并兜底拉一次 CUKTECH 快照。
+
+        SSE 推送仅在主窗口启动流后才活络；主窗口隐藏（常驻托盘）时
+        流仍在，但快照兜底保证冷启动/流未建时大卡也有读数。
+        """
+        self._jobs.submit(
+            self._service.cuktech_status,
+            on_success=self._quick.set_cuktech_status,
+            on_error=lambda _e: None,
+        )
+        self._quick.show_near_tray()
 
     def _show_main(self) -> None:
         self._main.show()
@@ -145,10 +183,33 @@ class TrayController:
         if dev is None:
             return
         from app.ui.device_dialog import DeviceDetailDialog
-        dlg = DeviceDetailDialog(self._service, self._jobs, dev, None)
-        dlg.load()
-        dlg.exec()
-        dlg.deleteLater()
+        if dev.source == "local" and dev.is_cuktech:
+            # CUKTECH 充电器不经米家 spec 工作台（service._get_device
+            # 对本地设备无 spec 会报错），与主窗口 _on_open_device 同款：
+            # 经 panel_factory 装专用面板并启动 SSE 实时流
+            def _make_cuktech_panel(parent):
+                from app.ui.cuktech_panel import CuktechPanel
+                return CuktechPanel(self._service, self._jobs, dev, parent)
+
+            dialog = DeviceDetailDialog(
+                self._service, self._jobs, dev, None,
+                panel_factory=_make_cuktech_panel)
+            try:
+                self._main._maybe_start_cuktech_stream()
+                self._main._open_cuktech_panels.append(dialog.panel)
+            except AttributeError:
+                pass
+        else:
+            dialog = DeviceDetailDialog(self._service, self._jobs, dev, None)
+        dialog.load()
+        dialog.exec()
+        if dev.source == "local" and dev.is_cuktech:
+            # 详情关闭：面板移出 SSE 推送投递名单（主窗口侧清理死引用）
+            try:
+                self._main._open_cuktech_panels.remove(dialog.panel)
+            except (AttributeError, ValueError):
+                pass
+        dialog.deleteLater()
 
     def set_devices(self, devices: list[DeviceInfo], known_power: dict[str, bool | None]) -> None:
         self._quick.set_devices(devices, known_power)
@@ -174,9 +235,107 @@ class TrayController:
         self._quick.deleteLater()
         self._create_quick_window()
         self._pending_show = was_visible
+        # 悬停弹窗样式集中、控件引用固定，直接原窗重刷
+        self._hover_popup.retheme()
 
     def hide_quick(self) -> None:
         self._quick.hide()
+
+    # ---------- 悬停数据弹窗（CUKTECH 充电器） ----------
+
+    def _check_hover(self) -> None:
+        """低频轮询光标是否落在托盘图标几何内；连续停留达阈值才弹窗。
+
+        图标几何以全局屏幕坐标为准（QSystemTrayIcon.geometry 常为空
+        rect 的环境直接静默，不弹也无害）；快捷窗口已呼出或弹窗正在
+        显示时跳过新的弹出判定。弹窗展示期间光标离开图标不隐藏——
+        用户正移入弹窗读数，点击别处/失焦由 ToolTip 窗口本身无焦点
+        特性兜底，靠 _hide_hover_popup 的定时复核收尾。
+        """
+        if self._tray is None or not self._tray.isVisible():
+            self._hover_since_ms = None
+            return
+        quick_open = self._quick.isVisible() or self._quick.is_explicitly_visible()
+        if quick_open and not self._hover_popup.isVisible():
+            self._hover_since_ms = None
+            return
+        geo = self._tray.geometry()
+        entered = (
+            not geo.isNull()
+            and geo.contains(QCursor.pos())
+        )
+        if entered:
+            now_ms = time.monotonic() * 1000.0
+            if self._hover_since_ms is None:
+                self._hover_since_ms = now_ms
+                return
+            if (now_ms - self._hover_since_ms >= _HOVER_DELAY_MS
+                    and not self._hover_popup.isVisible()
+                    and not self._popup_poll_timer.isActive()):
+                self._show_hover_popup()
+        else:
+            self._hover_since_ms = None
+            if self._hover_popup.isVisible():
+                # 弹窗已出现：光标离开图标后再离开「图标+弹窗」联合区域
+                # 才收，允许从图标移进弹窗读数
+                union = self._hover_popup.frameGeometry().united(geo)
+                if not union.contains(QCursor.pos()):
+                    self._hide_hover_popup()
+
+    def _show_hover_popup(self) -> None:
+        """在托盘图标下方弹出数据弹窗并开始状态拉取。"""
+        geo = self._tray.geometry()
+        popup = self._hover_popup
+        popup.adjustSize()
+        if geo.isNull():
+            from PySide6.QtGui import QGuiApplication
+            screen = QGuiApplication.primaryScreen()
+            if screen is None:
+                return
+            avail = screen.availableGeometry()
+            x = avail.right() - popup.width() - 16
+            y = avail.bottom() - popup.height() - 48
+            pos = QPoint(max(avail.left(), x), max(avail.top(), y))
+        else:
+            pos = QPoint(
+                geo.center().x() - popup.width() // 2, geo.bottom() + 4)
+        popup.move(pos)
+        popup.show()
+        self._popup_poll_timer.start()
+        self._poll_popup_status()
+
+    def _hide_hover_popup(self) -> None:
+        self._hover_popup.hide()
+        self._popup_poll_timer.stop()
+        self._hover_since_ms = None
+
+    def _poll_popup_status(self) -> None:
+        """弹窗可见期的状态兜底拉取（与 SSE 推送共存，读数幂等）。"""
+        if self._popup_poll_in_flight:
+            return
+        self._popup_poll_in_flight = True
+        self._jobs.submit(
+            self._service.cuktech_status,
+            on_success=self._apply_popup_status,
+            on_error=lambda _e: self._apply_popup_status(None),
+        )
+
+    def _apply_popup_status(self, status: dict | None) -> None:
+        self._popup_poll_in_flight = False
+        if status is not None:
+            self._hover_popup.set_status(status)
+
+    def push_cuktech_status(self, payload: dict) -> None:
+        """主窗口 SSE status 事件转发入口（实时刷新悬停弹窗与快捷窗口）。"""
+        self._quick.set_cuktech_status(payload)
+        if self._hover_popup.isVisible():
+            self._hover_popup.set_status(payload)
+
+    def push_cuktech_port(self, payload: dict) -> None:
+        """主窗口 SSE port_update 事件转发入口（单口增量）。"""
+        self._quick.push_cuktech_port(payload)
+        if self._hover_popup.isVisible():
+            self._hover_popup.push_port_update(payload)
 
     def set_tray_visible(self, visible: bool) -> None:
         """按设置开关托盘图标显隐：开启时常驻图标可见，关闭时隐藏。"""

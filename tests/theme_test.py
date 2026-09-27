@@ -2,8 +2,16 @@
 """浅色/深色主题回归测试（离屏运行）。"""
 import os
 import sys
+from pathlib import Path
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
+# offscreen 平台不自带字体，qtawesome 注册图标字体后唯一字体无 CJK 字形
+# 会导致 drawText 中文零像素（详见 tests/cuktech_panel_test.py 顶部注释）
+os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
+
+# 允许直接以文件方式运行（python tests/theme_test.py）时找到 app 包
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, ".")
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QDialog
@@ -152,7 +160,14 @@ if win._tray is not None:
 print("7. 托盘整窗重建 + 自动恢复显示 OK")
 
 win._all_devices = []  # 关闭路径不保存假设备
+# 测试环境的 settings_store 残留可能是「最小化到托盘」（且托盘创建成功），
+# win.close() 会走隐藏分支跳过 _jobs.shutdown()，其内部 QThread 活到
+# 解释器关闭即报 "QThread: Destroyed while thread is still running"。
+# 置 force_quit 走真实退出路径（对齐托盘菜单「退出」），closeEvent 内
+# 会自行 shutdown 并 quit。
+win._force_quit = True
 win.close()
+assert not win._jobs._thread.isRunning(), "主窗口任务线程未随 close 退出"
 jobs.shutdown()
 settings_store.set_theme_mode("system")
 tray_store.save([])

@@ -58,7 +58,7 @@ class TrayManagerDialog(OverlayDialog):
         header.addWidget(self._make_close_button())
         lay.addWidget(title_bar)
 
-        subtitle = QLabel("勾选加入托盘快捷窗口，可长按拖拽排序")
+        subtitle = QLabel("勾选加入托盘快捷窗口，可长按拖拽排序\n在托盘中右键卡片可切换占半行/整行（充电器整行显示实时功率）")
         subtitle.setStyleSheet(f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 9pt;")
         lay.addWidget(subtitle)
 

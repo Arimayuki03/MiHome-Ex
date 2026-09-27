@@ -13,7 +13,7 @@ import json
 from app.core import _json_store
 from app.core.models import DeviceInfo
 
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2  # v2：DeviceInfo 新增 source（设备来源）字段，vars() 序列化随之多出该键，旧版程序读到应整体丢弃而非反序列化报错
 _FILENAME = "devices_cache.json"
 
 
