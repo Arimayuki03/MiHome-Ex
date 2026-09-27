@@ -1,6 +1,6 @@
 @echo off
 :: ============================================
-:: MiHome-Windows one-click build entry (double-click friendly)
+:: MiHome-Ex one-click build entry (based on MiHome-Windows) (double-click friendly)
 :: All build logic lives in build.ps1 to keep Nuitka
 :: arguments in a single place.
 :: ============================================

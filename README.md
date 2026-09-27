@@ -1,6 +1,6 @@
-# MiHome-Windows
+# MiHome-Ex
 
-米家设备的 Windows 桌面控制端。基于 [mijiaAPI](https://github.com/Do1e/mijia-api)
+米家设备的 Windows 桌面控制端（扩展版）。基于 [huanyuejue/MiHome-Windows](https://github.com/huanyuejue/MiHome-Windows) fork 改造，并基于 [mijiaAPI](https://github.com/Do1e/mijia-api)
 构建图形界面，扫码登录后即可在本地窗口中查看和控制家里的全部米家设备。
 
 > **注意：当前项目仍处于早期版本。** 作者个人米家设备有限，无法对各类设备做针对性适配测试，因此 UI 和操作逻辑的完善度不算很高。不过基础使用（扫码登录、设备列表与常用控制、托盘、小爱语音等）已无大碍，但需适配更多设备功能则需要社区支持了。

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
+# 基于 huanyuejue/MiHome-Windows (GPL-3.0-or-later) fork 而来
 """程序入口。
 
 用法: .venv\\Scripts\\python.exe run.py

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
+# 基于 huanyuejue/MiHome-Windows (GPL-3.0-or-later) fork 而来
 #
 # 本程序为自由软件，基于 GPL-3.0 或更高版本发布；在遵守许可证的前提下，
 # 你可以自由使用、修改和再分发它。本程序不含任何担保，详见 LICENSE 文件。

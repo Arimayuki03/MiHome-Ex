@@ -3,13 +3,13 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mihome-windows"
+name = "mihome-ex"
 version = "0.2.0"
-description = "米家设备的 Windows 桌面控制端，基于 mijiaAPI 构建"
+description = "米家设备的 Windows 桌面控制端（扩展版），基于 mijiaAPI 构建；由 MiHome-Windows fork 而来"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
-authors = [{ name = "MiHome-Windows contributors" }]
+authors = [{ name = "MiHome-Ex contributors (based on MiHome-Windows by huanyuejue)" }]
 dependencies = [
     # 上游锁死在 4.x：大版本升级可能破坏适配层，必须人工验证后放行
     "mijiaAPI>=4.2,<5",

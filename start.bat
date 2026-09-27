@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title MiHome-Windows
+title MiHome-Ex
 cd /d "%~dp0"
 
 :: 1. Detect Python: try py launcher, fall back to python
@@ -18,7 +18,7 @@ if not exist ".venv\Scripts\python.exe" (
     echo [INIT] Done.
 )
 
-echo [START] MiHome-Windows
+echo [START] MiHome-Ex
 ".venv\Scripts\python.exe" -X utf8 run.py
 if errorlevel 1 (
     echo.
