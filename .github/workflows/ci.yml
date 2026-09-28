@@ -156,15 +156,17 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          $notes = "RELEASE_NOTES_$(($tag -replace '^v','')).md"
-          $args = @('release','create',$tag,
-                    '--repo','Arimayuki03/MiHome-Ex',
-                    "--title","MiHome-Ex $tag",
-                    '--generate-notes')
-          if (Test-Path $notes) { $args += @('--notes-file', $notes) }
-          $assets = Get-ChildItem 'installer\Output' -File |
-            Where-Object { $_.Name -match [regex]::Escape($tag.TrimStart('v')) }
+          $ver = $tag.TrimStart('v')
+          $notes = "RELEASE_NOTES_$ver.md"
+          # gh 参数逐个拼接（不能用 $args 变量名——pwsh 自动变量冲突）
+          $ghArgs = @('release', 'create', $tag, '--repo', 'Arimayuki03/MiHome-Ex',
+                      "--title", "MiHome-Ex $tag")
+          if (Test-Path $notes) { $ghArgs += @('--notes-file', $notes) }
+          else { $ghArgs += '--generate-notes' }
+          $assets = @(Get-ChildItem 'installer\Output' -File |
+            Where-Object { $_.Name -match [regex]::Escape($ver) })
           $assets += Get-Item 'installer\Output\SHA256SUMS.txt'
-          gh release create @args $assets.FullName
+          foreach ($a in $assets) { $ghArgs += $a.FullName }
+          gh @ghArgs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
