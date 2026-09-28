@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """版本检查的界面流程：发起检查 → 有新版本弹对话框，否则按场景反馈。
 
 自动（启动时）与手动（关于页/设置入口）共用这一条链路，仅反馈策略

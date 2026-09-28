@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """主窗口：米家 APP 风格的深色卡片视图。
 
 顶部为家庭名与房间筛选 tab，中部是设备卡片网格（列数随窗口宽度

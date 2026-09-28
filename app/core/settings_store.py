@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """应用设置的本地持久化。
 
 与 tray.json / workbench.json 同目录，单独文件 settings.json，
@@ -185,7 +185,9 @@ def set_theme_mode(value: str) -> None:
 # ---------- 开机自启动（Windows 注册表 HKCU Run） ----------
 
 _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-_RUN_VALUE_NAME = "MiHome-Windows"
+_RUN_VALUE_NAME = "MiHome-Ex"
+# 旧项目名注册表残留：新值写入前清理一次，避免双条目并存
+_LEGACY_RUN_VALUE_NAME = "MiHome-Windows"
 
 
 def autostart_supported() -> bool:
@@ -257,6 +259,15 @@ def set_autostart(value: bool) -> None:
     import winreg
 
     if value:
+        # 换名后首次开启自启动时顺手清掉旧名的残留条目
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0,
+                                winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, _LEGACY_RUN_VALUE_NAME)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0,
                                 winreg.KEY_SET_VALUE) as key:
             winreg.SetValueEx(key, _RUN_VALUE_NAME, 0, winreg.REG_SZ,

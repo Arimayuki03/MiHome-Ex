@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """右下角小爱语音悬浮球：点开后内联输入自然语言指令。
 
 悬浮球常驻主窗口右下角，点击在按钮上方展开内联输入面板（子控件

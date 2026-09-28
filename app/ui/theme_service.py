@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """主题编排：设置解析（跟随系统/浅色/深色）、siui 色组与全局 QSS 刷新。
 
 切换采用「重建式刷新」：全局 QSS 整块替换 + siui 全局色组切换 +

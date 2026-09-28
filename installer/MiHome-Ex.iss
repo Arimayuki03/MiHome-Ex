@@ -6,7 +6,7 @@
 ; 再用 ISCC 编译本脚本得到 installer\Output\MiHome-Ex-setup-<版本>.exe
 
 #define MyAppName "MiHome-Ex"
-#define MyAppVersion ReadIni(SourcePath + "\version.ini", "version", "value", "0.3.0")
+#define MyAppVersion ReadIni(SourcePath + "\version.ini", "version", "value", "0.3.1")
 #define MyAppPublisher "MiHome-Ex contributors"
 #define MyAppExeName "MiHome-Ex.exe"
 
@@ -95,7 +95,7 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
   begin
-    // 用户数据保留在 %LOCALAPPDATA%\MiHome-Windows\，此处不自动删除，
-    // 如需彻底清理可手动删除该目录
+    // 用户数据保留在 %LOCALAPPDATA%\MiHome-Ex\，此处不自动删除，
+    // 如需彻底清理可手动删除该目录（旧版残留 %LOCALAPPDATA%\MiHome-Windows\ 同理）
   end;
 end;

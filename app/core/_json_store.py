@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """JSON 持久化公共基础：数据目录解析、旧位置迁移、原子写入。
 
 打包形态曾把配置写在 exe 同目录，装进 Program Files 等受保护位置后
 写入失败且被静默吞掉，表现为设置每次启动重置；现统一写入
-%LOCALAPPDATA%\\MiHome-Windows\\，并把旧位置的已有文件一次性迁移过来。
+%LOCALAPPDATA%\\MiHome-Ex\\。历史位置（exe 同目录、旧项目名
+MiHome-Windows）的已有文件按优先级一次性迁移：exe 同目录优先于
+旧数据目录（后者可能已经历过一次 exe 同目录迁移，内容更旧）。
 开发形态仍为仓库根目录（文件均已 gitignore）。
 """
 
@@ -14,7 +16,8 @@ import os
 import sys
 from pathlib import Path
 
-_APP_DIR_NAME = "MiHome-Windows"
+_APP_DIR_NAME = "MiHome-Ex"
+_LEGACY_DIR_NAME = "MiHome-Windows"
 # 旧版写在 exe 同目录的全部数据文件，发现即迁移
 _KNOWN_FILES = ("settings.json", "tray.json", "workbench.json", "devices_cache.json")
 _migrated = False
@@ -29,7 +32,7 @@ def data_dir() -> Path:
 
 
 def data_file(filename: str) -> Path:
-    """数据文件完整路径，首次访问时尝试从旧的 exe 同目录迁移。"""
+    """数据文件完整路径，首次访问时尝试从历史位置迁移。"""
     global _migrated
     if getattr(sys, "frozen", False) and not _migrated:
         _migrated = True
@@ -45,11 +48,19 @@ def _migrate_legacy_files() -> None:
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
         for name in _KNOWN_FILES:
-            legacy = legacy_dir / name
             target = target_dir / name
-            if legacy.exists() and not target.exists():
+            if target.exists():
+                continue
+            # exe 同目录优先：旧数据目录的文件若曾经历过 exe 同目录
+            # 迁移，其内容一定不新于 exe 同目录的现役文件
+            legacy = legacy_dir / name
+            if legacy.exists():
                 # copyfile 保留旧文件，新位置写坏时下次启动还能再迁
                 target.write_bytes(legacy.read_bytes())
+                continue
+            legacy_appdir = target_dir.parent / _LEGACY_DIR_NAME / name
+            if legacy_appdir.exists():
+                target.write_bytes(legacy_appdir.read_bytes())
     except OSError:
         pass
 

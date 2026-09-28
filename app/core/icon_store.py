@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """设备图标持久化：model -> 图标 URL 映射与图片文件缓存。
 
 图标 URL 来自米家 CDN（Expires 为 9999 年，可长期信任），启动时优先

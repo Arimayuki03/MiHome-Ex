@@ -8,6 +8,7 @@
 由 [huanyuejue/MiHome-Windows](https://github.com/huanyuejue/MiHome-Windows) fork 改造而来，并集成了 [kairui1108/cuktech-ble-server](https://github.com/kairui1108/cuktech-ble-server) 作为本地 BLE 数据源。
 
 [![Release](https://img.shields.io/github/v/release/Arimayuki03/MiHome-Ex?logo=github&label=%E7%89%88%E6%9C%AC)](https://github.com/Arimayuki03/MiHome-Ex/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/Arimayuki03/MiHome-Ex/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/Arimayuki03/MiHome-Ex/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/Arimayuki03/MiHome-Ex?label=%E8%AE%B8%E5%8F%AF%E8%AF%81)](LICENSE)
 [![Platform](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%2F11-blue?logo=windows)](https://github.com/Arimayuki03/MiHome-Ex)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
@@ -204,7 +205,7 @@ LICENSE                         # GPL-3.0 许可证
 
 ### 应用数据（Releases 版）
 
-路径：`%LOCALAPPDATA%\MiHome-Windows\`
+路径：`%LOCALAPPDATA%\MiHome-Ex\`
 
 | 文件/目录 | 说明 |
 |------|------|
@@ -215,7 +216,7 @@ LICENSE                         # GPL-3.0 许可证
 | `ble-server/` | 内置 BLE 服务端数据（`config.yaml`、充电历史 `port_history.db`） |
 
 > 路径中的 `%LOCALAPPDATA%` 通常为 `C:\Users\<用户名>\AppData\Local`。
-> 旧版曾写在 exe 同目录，首次启动会自动迁移至此。
+> 旧位置（exe 同目录、旧项目名 `MiHome-Windows\`）的已有数据会在首次启动时自动迁移，无需手动处理。
 
 ### 应用数据（源码模式）
 
@@ -256,6 +257,12 @@ LICENSE                         # GPL-3.0 许可证
 3. 推送到分支（`git push origin feat/xxx`）并发起 Pull Request
 
 适配了新设备、修了 Bug，欢迎在 [Issues](https://github.com/Arimayuki03/MiHome-Ex/issues) 反馈。
+
+### 开发与 CI
+
+- 推送 / PR 自动运行测试套件（核心 + UI 离屏渲染，Python 3.10 / 3.12 双矩阵），见 [.github/workflows/ci.yml](.github/workflows/ci.yml)
+- 打 `v*` 标签自动触发完整构建（Nuitka 主程序 + 内置 BLE 服务端 → Inno Setup 安装包 + 便携版 zip）并发布 Release，产物附 SHA-256 校验和
+- 本地验证：`python tests/xxx_test.py` 逐套运行，或 `python -m tests.smoke_test` 做 mijiaAPI 兼容自检
 
 ## 📄 开源许可
 

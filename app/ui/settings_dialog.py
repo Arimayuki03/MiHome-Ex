@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """设置窗口：无边框可拖拽面板 + 背部暗色遮罩，与设备详情页同款观感。
 
 设置项按「主题界面 / 应用功能」两分类展示：标题下方的横向 tab 切换
@@ -270,7 +270,7 @@ class SettingsDialog(OverlayDialog):
             self._autostart_toggle.setChecked(settings_store.get_autostart())
         else:
             self._autostart_desc.setText(
-                "仅构建版（build.ps1 产物 dist/MiHome-Windows.exe）支持；当前为源码运行模式，"
+                "仅构建版（build.ps1 产物 dist/MiHome-Ex.exe）支持；当前为源码运行模式，"
                 "保存设置时将清除残留的自启动注册项")
         _sync_switch(self._autostart_toggle)
         self._autostart_toggle.setEnabled(self._autostart_supported)

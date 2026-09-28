@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """应用自重启：界面缩放等设置需重启进程才生效时的一键重启。
 
 常驻托盘时「关窗口」只是隐藏到托盘，进程并未退出；若仅提示手动

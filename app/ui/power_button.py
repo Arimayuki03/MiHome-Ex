@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """三态圆形电源按钮：设备卡片、托盘快捷行、详情电源行共用。
 
 开=米家绿、关=中灰、未知=描边空心；另有离线与忙碌两个覆盖态。

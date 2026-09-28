@@ -1,0 +1,163 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# MiHome-Ex CI：push/PR 跑测试套件，tag v* 触发完整构建并发布 Release。
+#
+# 测试均为脚本式 assert（python tests/xxx_test.py 直接运行），UI 套件
+# 离屏渲染（QT_QPA_PLATFORM=offscreen 自带回退，见 tests/conftest.py）。
+# 构建复用 build.ps1（Nuitka 主程序 + 内置 BLE 服务端扩展），编译产物
+# 经 Inno Setup 打安装包、Compress-Archive 打便携包，最后以 tag 版本号
+# 创建 Release 并附产物与 SHA-256。
+#
+# 说明：
+# - BLE 服务端扩展依赖同级 cuktech-ble-server 仓库（build.ps1 约定），
+#   CI 里 checkout 到 ../cuktech-ble-server（私有 fork，用同 token 拉取）；
+#   缺失时构建仅警告跳过扩展，主程序照常出包。
+# - MSVC 环境由 ilammy/msvc-dev-cmd 激活（与 build.ps1 的 vcvars64 等效）。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: 测试 (Python ${{ matrix.python }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+
+      - name: 静态冒烟（mijiaAPI 接口兼容自检）
+        run: python -m tests.smoke_test
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: 核心套件（client / facade / events / ble_server_manager）
+        run: |
+          python tests/cuktech_client_test.py
+          python tests/facade_test.py
+          python tests/cuktech_events_test.py
+          python tests/ble_server_manager_test.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: UI 套件（离屏渲染，暗/亮双主题）
+        run: |
+          python tests/cuktech_panel_test.py
+          python tests/cuktech_history_test.py
+          python tests/cuktech_port_detail_test.py
+          python tests/cuktech_quality_test.py
+          python tests/cuktech_limits_test.py
+          python tests/cuktech_protocols_test.py
+          python tests/cuktech_stream_ui_test.py
+          python tests/cuktech_visuals_test.py
+          python tests/tray_hover_test.py
+          python tests/tray_span_test.py
+          python tests/theme_script.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          QT_QPA_PLATFORM: offscreen
+
+  build-release:
+    name: 构建并发布
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # BLE 服务端扩展源码（同级目录，build.ps1 约定路径 ../cuktech-ble-server）
+      - name: Checkout BLE 服务端扩展源
+        uses: actions/checkout@v4
+        with:
+          repository: Arimayuki03/cuktech-ble-server
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: cuktech-ble-server
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: 激活 MSVC 编译环境
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install nuitka ordered-set zstandard
+
+      - name: 构建（Nuitka 主程序 + BLE 服务端扩展）
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: 校验产物版本与 tag 一致
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $ver = (Get-Item 'dist\MiHome-Ex.exe').VersionInfo.ProductVersion
+          if ($ver -notlike "$tag*") { throw "tag $tag 与产物版本 $ver 不一致" }
+
+      - name: 打 Inno Setup 安装包
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
+                              "$env:ProgramFiles\Inno Setup 6\ISCC.exe" -ErrorAction SilentlyContinue |
+                   Select-Object -First 1
+          if (-not $iscc) {
+            # runner 未预装则用 chocolatey 安装（缓存目录命中时秒回）
+            choco install innosetup -y --no-progress
+            $iscc = Get-ChildItem "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Select-Object -First 1
+          }
+          & $iscc.FullName installer\MiHome-Ex.iss
+
+      - name: 打便携版 zip 并计算 SHA-256
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          Compress-Archive -Path 'dist\*' -DestinationPath "installer\Output\MiHome-Ex-$tag-x64-portable.zip" -Force
+          $files = Get-ChildItem 'installer\Output' -File |
+            Where-Object { $_.Name -match [regex]::Escape($tag) }
+          $sums = $files | ForEach-Object {
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash + '  ' + $_.Name
+          }
+          $sums | Set-Content installer\Output\SHA256SUMS.txt
+          Get-Content installer\Output\SHA256SUMS.txt
+
+      - name: 生成发布说明并创建 Release
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $notes = "RELEASE_NOTES_$(($tag -replace '^v','')).md"
+          $args = @('release','create',$tag,
+                    '--repo','Arimayuki03/MiHome-Ex',
+                    "--title","MiHome-Ex $tag",
+                    '--generate-notes')
+          if (Test-Path $notes) { $args += @('--notes-file', $notes) }
+          $assets = Get-ChildItem 'installer\Output' -File |
+            Where-Object { $_.Name -match [regex]::Escape($tag.TrimStart('v')) }
+          $assets += Get-Item 'installer\Output\SHA256SUMS.txt'
+          gh release create @args $assets.FullName
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

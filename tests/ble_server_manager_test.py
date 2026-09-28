@@ -64,7 +64,7 @@ def test_data_dir_under_localappdata() -> None:
     import os
 
     if os.environ.get("LOCALAPPDATA"):
-        assert _data_dir() == Path(os.environ["LOCALAPPDATA"]) / "MiHome-Windows" / "ble-server"
+        assert _data_dir() == Path(os.environ["LOCALAPPDATA"]) / "MiHome-Ex" / "ble-server"
 
 
 # ---------- 设置存取 ----------

@@ -19,8 +19,11 @@ from PySide6.QtWidgets import QApplication
 from app import __version__
 from app.ui.main_window import MainWindow
 
-_SERVER_NAME = "MiHome-Windows"
-_LOCK_NAME = "MiHome-Windows.lock"
+_SERVER_NAME = "MiHome-Ex"
+_LOCK_NAME = "MiHome-Ex.lock"
+# 旧项目名的唤起通道：换名过渡期内，旧版实例仍在运行时二次启动
+# 只唤起旧实例、不再另起新实例（避免新旧双份托盘/轮询并存）
+_LEGACY_SERVER_NAME = "MiHome-Windows"
 
 
 def _set_console_visible(visible: bool) -> None:
@@ -96,6 +99,19 @@ def main() -> int:
             except Exception:
                 pass
             return 0
+        # 旧版（MiHome-Windows）实例在运行：唤起它但不起第二个应用
+        sock.connectToServer(_LEGACY_SERVER_NAME)
+        if sock.waitForConnected(400):
+            try:
+                sock.write(b"show")
+                sock.waitForBytesWritten(300)
+            except Exception:
+                pass
+            try:
+                sock.disconnectFromServer()
+            except Exception:
+                pass
+            return 0
         # 连接失败视为残留锁/服务，强制清理后重试一次
         try:
             QLocalServer.removeServer(_SERVER_NAME)
@@ -125,7 +141,7 @@ def main() -> int:
     font.setStyleStrategy(QFont.PreferAntialias)
     font.setHintingPreference(QFont.PreferNoHinting)
     app.setFont(font)
-    app.setApplicationName("MiHome-Windows")
+    app.setApplicationName("MiHome-Ex")
     app.setApplicationVersion(__version__)
     app.setQuitOnLastWindowClosed(False)
 

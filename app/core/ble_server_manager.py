@@ -11,7 +11,7 @@ CuktechBleServer.exe；开发态回退服务端仓库 venv + ha_server.py），
 - 幂等：8199 已有服务应答（外部自跑或上次托盘残留）则不重复拉起，
   且该外部进程退出时不被清理。
 - 数据与程序分离：config.yaml / port_history.db 经环境变量指到
-  %LOCALAPPDATA%/MiHome-Windows/ble-server/，Program Files 安装目录
+  %LOCALAPPDATA%/MiHome-Ex/ble-server/，Program Files 安装目录
 - 停止策略：先温和后强杀。服务端 sqlite 开 WAL（history.py），强杀
   不损坏数据库，最多丢约 1 秒批量缓冲，可安全兜底。
 """
@@ -36,9 +36,26 @@ def _default_url() -> str:
 
 
 def _data_dir() -> Path:
-    """服务端数据目录：%LOCALAPPDATA%\\MiHome-Windows\\ble-server\\。"""
+    """服务端数据目录：%LOCALAPPDATA%\\MiHome-Ex\\ble-server\\。
+
+    旧项目名 MiHome-Windows\\ble-server\\ 的已有数据（config.yaml、
+    port_history.db）首次调用时整体搬迁，避免充电历史归零。
+    """
     base = os.environ.get("LOCALAPPDATA") or str(Path.home())
-    return Path(base) / "MiHome-Windows" / "ble-server"
+    data_dir = Path(base) / "MiHome-Ex" / "ble-server"
+    legacy_dir = Path(base) / "MiHome-Windows" / "ble-server"
+    if legacy_dir.is_dir() and not data_dir.exists():
+        try:
+            data_dir.parent.mkdir(parents=True, exist_ok=True)
+            # rename 同盘原子；失败（旧目录被占用等）回退整体拷贝。
+            # 都失败则按全新目录走：服务端有全默认值兜底，不影响启动
+            try:
+                legacy_dir.rename(data_dir)
+            except OSError:
+                shutil.copytree(legacy_dir, data_dir, dirs_exist_ok=True)
+        except OSError:
+            pass
+    return data_dir
 
 
 def locate_server_command() -> tuple[str, list[str], Path] | None:

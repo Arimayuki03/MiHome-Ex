@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """GitHub Releases 新版本检查：取最新 release 版本号与当前版本对比。
 
 检查走独立后台线程而非 JobExecutor 串行队列：这是与米家无关的第三方
@@ -35,7 +35,7 @@ def fetch_latest_release() -> ReleaseInfo:
         LATEST_API,
         timeout=(5, 8),
         headers={
-            "User-Agent": f"MiHome-Windows/{__version__}",
+            "User-Agent": f"MiHome-Ex/{__version__}",
             "Accept": "application/vnd.github+json",
         },
     )

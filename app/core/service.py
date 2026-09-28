@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """mijiaAPI 适配层——全项目唯一允许 import mijiaAPI 的模块。
 
 上游库只从 PyPI 安装升级（版本锁 <5，见 pyproject.toml），接口一旦变化

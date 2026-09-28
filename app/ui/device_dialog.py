@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MiHome-Windows: 米家设备的 Windows 桌面控制端
-# Copyright (C) 2026 MiHome-Windows contributors
+# MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
+# Copyright (C) 2026 MiHome-Ex contributors
 """设备详情抽屉：与添加功能同款的侧滑抽屉。
 
 不再作为独立窗口弹出，而是以遮罩 + 右侧面板的形式覆盖在主窗口
