@@ -100,6 +100,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._service = MijiaService()
         self._jobs = JobExecutor(self)
+        # 内置 BLE 服务端（扩展组件）：随主程序启停，充电器数据的本地源。
+        # 组件缺失（未打包/无服务端 venv）时管理器静默降级
+        from app.core.ble_server_manager import BleServerManager
+        self._ble_server_mgr = BleServerManager(self)
 
         from app import resource_path
         self.setWindowIcon(QIcon(str(resource_path("app/ui/icon.png"))))
@@ -546,6 +550,11 @@ class MainWindow(QMainWindow):
         """
         self._poll_timer.start()
         self._metrics_timer.start()
+        # 内置 BLE 服务端：登录检查通过后异步拉起（QProcess.start 本身
+        # 异步 + 探测走 QTimer，不阻塞 UI；关着设置开关时不拉）
+        from app.core.settings_store import get_ble_server_enabled
+        if get_ble_server_enabled():
+            self._ble_server_mgr.start()
         cached = device_cache.load()
         if cached is None:
             self.load_devices()
@@ -769,6 +778,9 @@ class MainWindow(QMainWindow):
             return
         dlg = SettingsDialog(self, devices=self._all_devices)
         self._settings_dialog = dlg
+        # 内置充电器服务开关即时启停（保存时发信号；dlg.exec 阻塞期间
+        # 信号排队，accept 返回事件循环后才派发，此处先接好）
+        dlg.ble_server_setting_changed.connect(self._on_ble_server_setting_changed)
         dlg.exec()
         scale_changed = getattr(dlg, "_scale_changed", False)
         dlg.deleteLater()
@@ -805,6 +817,13 @@ class MainWindow(QMainWindow):
             self._update_tray_devices()
         # 同步小爱悬浮按钮显隐
         self._update_voice_fab()
+
+    def _on_ble_server_setting_changed(self, enabled: bool) -> None:
+        """设置里「内置充电器服务」开关变化：即时启停，无需重启。"""
+        if enabled:
+            self._ble_server_mgr.start()
+        else:
+            self._ble_server_mgr.stop()
 
     def _update_voice_fab(self) -> None:
         """根据设置与设备列表决定小爱悬浮按钮显隐。
@@ -1512,6 +1531,9 @@ class MainWindow(QMainWindow):
         # SSE 常驻线程必须先于窗口销毁停掉（隐藏到托盘的分支不停流，
         # 推送继续为下次唤出保温数据）
         self._stop_cuktech_stream()
+        # 内置 BLE 服务端随主程序退出（外部拉起的实例管理器不清理）；
+        # 同步停止最多约 3s+1s，服务端 WAL 保证强杀不损坏数据库
+        self._ble_server_mgr.stop()
         self._jobs.shutdown()
         super().closeEvent(event)
         # quitOnLastWindowClosed 为 False（托盘常驻需要），关闭窗口不会自动

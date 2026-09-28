@@ -199,6 +199,76 @@ Remove-Item $TempBuild -Recurse -Force -ErrorAction SilentlyContinue
 $Elapsed = (Get-Date) - $BuildStart
 Write-Host ("`n编译耗时 {0:00}:{1:00}" -f [int]$Elapsed.TotalMinutes, $Elapsed.Seconds) -ForegroundColor Gray
 
+# ============================================================
+# 6. 扩展组件：内置 BLE 服务端（cuktech-ble-server）
+# ============================================================
+# 独立 Nuitka standalone，输出 dist\ble-server\。可选降级：编译失败
+# 仅警告不阻塞主应用（BleServerManager 按组件缺失静默不工作）。
+$ServerRoot = Join-Path $Root "..\cuktech-ble-server"
+$ServerVenvPy = Join-Path $ServerRoot ".venv\Scripts\python.exe"
+$ServerExe = "dist\ble-server\CuktechBleServer.exe"
+if (-not (Test-Path $ServerExe) -and (Test-Path $ServerVenvPy)) {
+    Write-Host "`nBuilding BLE server extension (cuktech-ble-server)..." -ForegroundColor Cyan
+    # 不用 2>&1 重定向：脚本级 $ErrorActionPreference=Stop 会把
+    # stderr 文本升级为终止错误（NativeCommandError 假警报）
+    & $ServerVenvPy -m pip install --quiet nuitka ordered-set zstandard
+    $TempServerBuild = Join-Path $env:TEMP "mihome-server-build"
+    if (Test-Path $TempServerBuild) { Remove-Item $TempServerBuild -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $TempServerBuild | Out-Null
+    $ServerNuitkaArgs = @(
+        "ha_server.py"
+        "--standalone"
+        "--windows-console-mode=disable"
+        "--include-package=cuktech_ble"
+        # 服务端 web 静态前端（内存预读 + FileResponse 兜底，必须随包）
+        "--include-data-dir=web=web/"
+        "--include-data-files=config.yaml=config.default.yaml"
+        "--nofollow-import-to=tkinter,unittest,pytest,docker,systemd"
+        "--jobs=4"
+        "--assume-yes-for-downloads"
+        "--output-dir=$TempServerBuild"
+        "--output-filename=CuktechBleServer.exe"
+        "--product-name=CuktechBleServer"
+        "--product-version=1.1.1"
+        "--copyright=MIT (C) kairui1108/cuktech-ble-server contributors"
+    )
+    Push-Location $ServerRoot
+    try {
+        $env:PYTHONPATH = Join-Path $ServerRoot "src"
+        # 输出量大且含 stderr。PowerShell 5.1 下 *> / 2>&1 重定向都会被
+        # $ErrorActionPreference=Stop 把 stderr 行升级成终止错误；
+        # 借 cmd.exe 承接重定向，PowerShell 只接收 cmd 的退出码
+        $ServerLog = "$TempServerBuild\build.log"
+        $ArgLine = ($ServerNuitkaArgs | ForEach-Object {
+            if ($_ -match ' ') { '"' + $_ + '"' } else { $_ }
+        }) -join ' '
+        cmd /c "`"$ServerVenvPy`" -m nuitka $ArgLine > `"$ServerLog`" 2>&1"
+        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+    } finally {
+        Pop-Location
+    }
+    if ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $TempServerBuild "ha_server.dist"))) {
+        # winrt 是 PEP420 命名空间包（无 __init__.py，winrt-windows-* 子轮
+        # 各自往 winrt/windows/... 放纯 Python shim），Nuitka 的
+        # --include-package 对这类包只带走了 pyd、漏掉 shim，运行期 BLE
+        # 扫描回调报 ModuleNotFoundError。编译后从 venv 整树补拷（纯 py）。
+        $WinrtShimSrc = Join-Path $ServerRoot ".venv\Lib\site-packages\winrt\windows"
+        if (Test-Path $WinrtShimSrc) {
+            Copy-Item $WinrtShimSrc (Join-Path $TempServerBuild "ha_server.dist\winrt\windows") -Recurse -Force
+        }
+        New-Item -ItemType Directory -Force -Path "dist\ble-server" | Out-Null
+        Copy-Item (Join-Path $TempServerBuild "ha_server.dist\*") "dist\ble-server" -Recurse -Force
+        Remove-Item $TempServerBuild -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "BLE server extension built: $ServerExe" -ForegroundColor Green
+    } else {
+        Write-Host "[WARN] BLE 服务端扩展编译失败，安装包将不含该组件（主应用功能不受影响，充电器卡片按组件缺失语义缺席）。" -ForegroundColor Yellow
+    }
+} elseif (Test-Path $ServerExe) {
+    Write-Host "[OK] BLE server extension already built" -ForegroundColor Green
+} else {
+    Write-Host "[WARN] 未找到服务端 venv（$ServerVenvPy），跳过 BLE 服务端扩展编译。" -ForegroundColor Yellow
+}
+
 $Exe = "dist\MiHome-Ex.exe"
 if (Test-Path $Exe) {
     $Size = [math]::Round((Get-Item $Exe).Length / 1MB, 1)

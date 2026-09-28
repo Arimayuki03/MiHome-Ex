@@ -8,7 +8,7 @@
 替换带来的生硬变化。
 """
 
-from PySide6.QtCore import QEvent, QPropertyAnimation, Qt
+from PySide6.QtCore import QEvent, QPropertyAnimation, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
@@ -74,6 +74,9 @@ class _PagesHost(QWidget):
 
 class SettingsDialog(OverlayDialog):
     """设置对话框：暗色遮罩 + 居中圆角面板，可拖拽。"""
+
+    # 保存时若内置充电器服务开关有变化即发出；主窗口即时启停服务端
+    ble_server_setting_changed = Signal(bool)
 
     def __init__(self, parent=None, devices=None):
         super().__init__(parent)
@@ -300,6 +303,18 @@ class SettingsDialog(OverlayDialog):
         self._speaker_combo.setFixedWidth(min(max(text_w + 48, 150), 300))
         speaker_row.addWidget(self._speaker_combo)
 
+        # ── 内置充电器服务（BLE 服务端扩展组件，随主程序启停） ──
+        # 记住打开时的原始值：保存时对比决定是否发即时启停信号
+        self._ble_server_original = settings_store.get_ble_server_enabled()
+        self._ble_item, self._ble_label, self._ble_desc, ble_row = self._make_item(
+            "内置充电器服务",
+            "随本软件自动启动本地充电器服务（cuktech-ble-server），"
+            "为本软件提供充电器实时数据；关闭后需自行运行该服务")
+        self._ble_toggle = themed_switch()
+        self._ble_toggle.setChecked(self._ble_server_original)
+        _sync_switch(self._ble_toggle)
+        ble_row.addWidget(self._ble_toggle)
+
         # ── 带快捷操作面板的系统托盘 ──
         self._tray_item, self._tray_label, self._tray_desc, tray_row = self._make_item(
             "带快捷操作面板的系统托盘",
@@ -340,8 +355,9 @@ class SettingsDialog(OverlayDialog):
         update_row.addWidget(self._update_toggle)
 
         return self._build_scroll([
-            self._autostart_item, self._speaker_item, self._tray_item,
-            self._start_min_item, self._hide_item, self._update_item,
+            self._ble_item, self._autostart_item, self._speaker_item,
+            self._tray_item, self._start_min_item, self._hide_item,
+            self._update_item,
         ])
 
     # ---------- 分类切换 ----------
@@ -394,7 +410,7 @@ class SettingsDialog(OverlayDialog):
     def _apply_styles(self) -> None:
         """主题相关内联样式：构造与 retheme 共用。"""
         panel_card = f"QFrame {{ background: {SiColors.CARD}; border-radius: 10px; }}"
-        for item in (self._tray_item, self._start_min_item, self._fab_item,
+        for item in (self._ble_item, self._tray_item, self._start_min_item, self._fab_item,
                      self._theme_item, self._autostart_item, self._speaker_item,
                      self._hide_item, self._scale_item, self._update_item):
             item.setStyleSheet(panel_card)
@@ -404,12 +420,12 @@ class SettingsDialog(OverlayDialog):
             item.setMinimumHeight(0)
         self._title_label.setStyleSheet(
             f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
-        for label in (self._tray_label, self._start_min_label, self._fab_label,
+        for label in (self._ble_label, self._tray_label, self._start_min_label, self._fab_label,
                       self._theme_label, self._autostart_label, self._speaker_label,
                       self._hide_label, self._scale_label, self._update_label):
             label.setStyleSheet(
                 f"color: {SiColors.TEXT_PRIMARY}; background: transparent; font-size: 10pt;")
-        for desc in (self._tray_desc, self._start_min_desc, self._fab_desc,
+        for desc in (self._ble_desc, self._tray_desc, self._start_min_desc, self._fab_desc,
                      self._theme_desc, self._autostart_desc, self._speaker_desc,
                      self._hide_desc, self._scale_desc, self._update_desc):
             desc.setStyleSheet(
@@ -520,6 +536,11 @@ class SettingsDialog(OverlayDialog):
 
     def _save_and_accept(self) -> None:
         settings_store.set_minimize_to_tray(self._tray_toggle.isChecked())
+        # 内置充电器服务：落盘；开关有变化时发即时启停信号（不要求重启）
+        ble_enabled = self._ble_toggle.isChecked()
+        settings_store.set_ble_server_enabled(ble_enabled)
+        if ble_enabled != self._ble_server_original:
+            self.ble_server_setting_changed.emit(ble_enabled)
         # 子开关仅在父开关开启时有效，关闭时强制写入 False
         if self._tray_toggle.isChecked():
             settings_store.set_start_minimized(self._start_min_toggle.isChecked())

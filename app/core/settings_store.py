@@ -26,6 +26,7 @@ _DEFAULTS: dict = {
     "ui_scale": 1.0,    # 界面缩放个人微调乘数（叠加在软件基准缩放之上），需重启生效
     "tray_columns": 2,  # 托盘快捷窗口卡片列数：1 或 2
     "check_update_enabled": True,  # 启动时自动检查 GitHub 新版本
+    "ble_server_enabled": True,  # 随主程序启停内置 BLE 服务端（扩展组件）
 }
 
 
@@ -125,6 +126,17 @@ def get_check_update_enabled() -> bool:
 def set_check_update_enabled(value: bool) -> None:
     raw = _read_raw()
     raw["check_update_enabled"] = bool(value)
+    _write_raw(raw)
+
+
+def get_ble_server_enabled() -> bool:
+    """是否随主程序启停内置 BLE 服务端，默认 True。"""
+    return bool(_read_raw().get("ble_server_enabled", True))
+
+
+def set_ble_server_enabled(value: bool) -> None:
+    raw = _read_raw()
+    raw["ble_server_enabled"] = bool(value)
     _write_raw(raw)
 
 

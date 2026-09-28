@@ -73,6 +73,7 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/C taskkill /IM {#MyAppExeName} /F >nul 2>&1"; Flags: runhidden; RunOnceId: "KillApp"
+Filename: "{cmd}"; Parameters: "/C taskkill /IM CuktechBleServer.exe /F >nul 2>&1"; Flags: runhidden; RunOnceId: "KillBleServer"
 
 [UninstallDelete]
 ; Nuitka onefile/standalone 运行残留（如有）
@@ -83,8 +84,10 @@ function InitializeSetup(): Boolean;
 var
   ResultCode: Integer;
 begin
-  // 静默结束正在运行的实例（忽略失败：可能本就没在运行）
+  // 静默结束正在运行的实例（忽略失败：可能本就没在运行）；
+  // 内置 BLE 服务端扩展组件同样先结束，避免覆盖安装文件占用
   Exec(ExpandConstant('{cmd}'), ExpandConstant('/C taskkill /IM {#MyAppExeName} /F >nul 2>&1'), '', SW_HIDE, True, ResultCode);
+  Exec(ExpandConstant('{cmd}'), '/C taskkill /IM CuktechBleServer.exe /F >nul 2>&1', '', SW_HIDE, True, ResultCode);
   Result := True;
 end;
 
