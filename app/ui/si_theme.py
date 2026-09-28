@@ -425,9 +425,12 @@ def build_qss() -> str:
         THEME_CHECKED_HOVER=THEME_CHECKED_HOVER,
         DANGER=DANGER, WHITE=WHITE,
     )
-    # 缺键早失败：模板新增占位符而某套调色板漏配时给出可读报错
-    missing = set(_QSS_TEMPLATE.get_identifiers()) - set(values)
-    assert not missing, f"QSS 模板占位符缺少调色板键: {missing}"
+    # 缺键早失败：模板新增占位符而某套调色板漏配时给出可读报错。
+    # Template.get_identifiers 是 Python 3.11 新增；3.10 下退回
+    # substitute 自身报错兜底（缺键信息稍弱但行为一致）
+    if hasattr(_QSS_TEMPLATE, "get_identifiers"):
+        missing = set(_QSS_TEMPLATE.get_identifiers()) - set(values)
+        assert not missing, f"QSS 模板占位符缺少调色板键: {missing}"
     return _QSS_TEMPLATE.substitute(values)
 
 
