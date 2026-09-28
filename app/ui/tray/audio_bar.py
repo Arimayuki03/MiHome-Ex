@@ -149,12 +149,16 @@ class _TrayAudioBar(QFrame):
         self._set_enabled(False)
         self._vol_label.setText("…")
         self._slider.setEnabled(False)
-        # 拉取音量范围与当前值
-        self._jobs.submit(self._fetch_state, on_success=self._apply_state, on_error=self._on_fetch_error)
+        # 拉取音量范围与当前值（did 快照随响应回传：飞行中切到别的
+        # 音箱时旧响应直接丢弃，不再把 A 台的音量渲染到 B 台上）
+        self._jobs.submit(
+            lambda d=did: self._fetch_state(d),
+            on_success=lambda data, d=did: self._apply_state(data, d),
+            on_error=self._on_fetch_error,
+        )
 
-    def _fetch_state(self):
-        # 后台线程：先拿 spec 范围，再批量读值
-        did = self._did
+    def _fetch_state(self, did: str):
+        # 后台线程：先拿 spec 范围，再批量读值（did 来自提交时快照）
         if not did:
             return None
         # 取 volume/mute 的范围与可读性；device_detail 会走 spec 缓存
@@ -197,8 +201,11 @@ class _TrayAudioBar(QFrame):
             "vals": vals,
         }
 
-    def _apply_state(self, data) -> None:
+    def _apply_state(self, data, did: str | None = None) -> None:
         if not shiboken6.isValid(self) or data is None:
+            return
+        # 飞行中已切到别的音箱：这份状态是旧设备的，丢弃
+        if did is not None and did != self._did:
             return
         if self._did is None:
             return
@@ -267,24 +274,31 @@ class _TrayAudioBar(QFrame):
         if not self._did:
             return
         v = int(self._slider.value())
-        # 松手才下发，避免拖动连击
+        # 松手才下发，避免拖动连击；did 快照防飞行中切音箱后写错设备
+        did = self._did
         self._pending_volume = v
         self._slider.setEnabled(False)
         self._jobs.submit(
-            lambda v=v: self._service.write_prop(self._did, self._vol_name, v),
-            on_success=lambda _, v=v: self._on_volume_written(v),
-            on_error=self._on_volume_error,
+            lambda v=v, d=did: self._service.write_prop(d, self._vol_name, v),
+            on_success=lambda _, v=v, d=did: self._on_volume_written(v, d),
+            on_error=lambda e, d=did: self._on_volume_error(e, d),
         )
 
-    def _on_volume_written(self, v: int) -> None:
+    def _on_volume_written(self, v: int, did: str | None = None) -> None:
         if not shiboken6.isValid(self):
+            return
+        # 写入期间已切到别的音箱：本次结果与本台无关，仅当 did 匹配才生效
+        if did is not None and did != self._did:
             return
         self._volume = v
         self._pending_volume = None
         self._slider.setEnabled(True)
 
-    def _on_volume_error(self, err: Exception) -> None:
+    def _on_volume_error(self, err: Exception, did: str | None = None) -> None:
         if not shiboken6.isValid(self):
+            return
+        # 同上：飞行中切了音箱，旧一台的失败不该动当前滑块
+        if did is not None and did != self._did:
             return
         self._slider.setEnabled(True)
         # 回滚为旧值
@@ -312,19 +326,23 @@ class _TrayAudioBar(QFrame):
         mn = self._mute_name
         self._jobs.submit(
             lambda did=did, mn=mn, nv=new_val: self._service.write_prop(did, mn, nv),
-            on_success=lambda _, nv=new_val: self._on_mute_written(nv),
-            on_error=self._on_mute_error,
+            on_success=lambda _, nv=new_val, d=did: self._on_mute_written(nv, d),
+            on_error=lambda e, d=did: self._on_mute_error(e, d),
         )
 
-    def _on_mute_written(self, new_val: bool) -> None:
+    def _on_mute_written(self, new_val: bool, did: str | None = None) -> None:
         if not shiboken6.isValid(self):
             return
+        if did is not None and did != self._did:
+            return  # 飞行中已切到别的音箱
         self._muted = new_val
         self._refresh_play_style()
         self._btn_play.setEnabled(True)
 
-    def _on_mute_error(self, err: Exception) -> None:
+    def _on_mute_error(self, err: Exception, did: str | None = None) -> None:
         if not shiboken6.isValid(self):
+            return
+        if did is not None and did != self._did:
             return
         self._btn_play.setEnabled(True)
         from app.ui.toast import Toast

@@ -661,7 +661,11 @@ class SessionHistoryWidget(QWidget):
         self._page = 1
         self._pages = 1
         self._total = 0
-        self._in_flight = False
+        # 请求序号守卫（取代 _in_flight 布尔）：提交前自增并捕获快照，
+        # 回调只在「仍是最新一单」时渲染——飞行中改筛选立即发新单，
+        # 旧响应被丢弃。原布尔守卫会直接吞掉新筛选（要再点一次才生效），
+        # 或让慢的旧响应渲染到新筛选下（代码审查 2026-09-28 medium）
+        self._session_seq = 0
         self._session_rows: list[_SessionRow] = []
         # 当前页会话原始 dict（id -> session）：供容器回查摘要字段
         self._sessions: dict[int, dict] = {}
@@ -803,16 +807,21 @@ class SessionHistoryWidget(QWidget):
         self.refresh()
 
     def refresh(self, manual: bool = False) -> None:
-        """拉取会话列表（当前周期/端口/页码）；单次任务单请求。"""
-        if self._service is None or self._jobs is None or self._in_flight:
+        """拉取会话列表（当前周期/端口/页码）；单次任务单请求。
+
+        序号守卫：飞行中改筛选/翻页会立刻提交新请求（自增序号），
+        旧响应迟到时序号不匹配被丢弃——新筛选立即生效，不会被吞。
+        """
+        if self._service is None or self._jobs is None:
             return
-        self._in_flight = True
+        self._session_seq += 1
+        seq = self._session_seq
         self._jobs.submit(
             lambda: self._service.cuktech_sessions(
                 port=self._port, period=self._period,
                 limit=_PAGE_LIMIT, page=self._page),
-            on_success=self._on_sessions,
-            on_error=self._on_error,
+            on_success=lambda payload, s=seq: self._on_sessions(payload, s),
+            on_error=lambda error, s=seq: self._on_error(error, s),
         )
 
     def _on_period_changed(self, index: int) -> None:
@@ -834,10 +843,9 @@ class SessionHistoryWidget(QWidget):
         self._page = page
         self.refresh()
 
-    def _on_sessions(self, payload: dict) -> None:
-        self._in_flight = False
-        if not shiboken6.isValid(self):
-            return
+    def _on_sessions(self, payload: dict, seq: int) -> None:
+        if seq != self._session_seq or not shiboken6.isValid(self):
+            return  # 迟到的旧响应：已被更新的一单取代
         sessions = payload.get("sessions") or []
         try:
             self._total = int(payload.get("total") or 0)
@@ -847,10 +855,9 @@ class SessionHistoryWidget(QWidget):
         self._page = max(1, min(self._page, self._pages))
         self._render_sessions(sessions)
 
-    def _on_error(self, error: Exception) -> None:
-        self._in_flight = False
-        if not shiboken6.isValid(self):
-            return
+    def _on_error(self, error: Exception, seq: int) -> None:
+        if seq != self._session_seq or not shiboken6.isValid(self):
+            return  # 旧一单的失败：新单在途，不打扰用户
         # 历史模块无轮询兜底，任何一次加载都是用户动作触发，失败必须提示
         Toast.info(self, f"会话历史加载失败：{error}", 3000)
         if not self._session_rows:
@@ -1006,7 +1013,9 @@ class EnergySummaryWidget(QWidget):
         self._service = None
         self._jobs = None
         self._period = "today"
-        self._in_flight = False
+        # 序号守卫（同 SessionHistoryWidget._session_seq）：飞行中改周期
+        # 立即重发，旧响应迟到按序号丢弃——不吞新请求也不串渲染
+        self._stats_seq = 0
         self._protocol_rows: list[dict] = []
         # 每小时 Tab 状态：数据未拉过/正在拉；周期变化即清缓存
         self._hourly_loaded = False
@@ -1241,15 +1250,16 @@ class EnergySummaryWidget(QWidget):
         """拉取 stats + protocols（合并为一次任务，串行队列只排一单）。
 
         当前 Tab 在「每小时」时同时刷新每小时数据；其他 Tab 切入时
-        才拉（懒加载纪律）。
+        才拉（懒加载纪律）。序号守卫：飞行中改周期立即重发新单。
         """
-        if self._service is None or self._jobs is None or self._in_flight:
+        if self._service is None or self._jobs is None:
             return
-        self._in_flight = True
+        self._stats_seq += 1
+        seq = self._stats_seq
         self._jobs.submit(
             self._fetch_all,
-            on_success=self._on_data,
-            on_error=self._on_error,
+            on_success=lambda data, s=seq: self._on_data(data, s),
+            on_error=lambda error, s=seq: self._on_error(error, s),
         )
         if self._deck.current_index == 1:
             self._load_hourly()
@@ -1296,17 +1306,15 @@ class EnergySummaryWidget(QWidget):
             if self._deck.current_index == 1:
                 self._load_hourly()
 
-    def _on_data(self, data: tuple) -> None:
-        self._in_flight = False
-        if not shiboken6.isValid(self):
-            return
+    def _on_data(self, data: tuple, seq: int) -> None:
+        if seq != self._stats_seq or not shiboken6.isValid(self):
+            return  # 迟到的旧响应（周期已再次变化）
         stats, protocols = data
         self._render_stats(stats or {})
         self._render_protocols(protocols)
 
-    def _on_error(self, error: Exception) -> None:
-        self._in_flight = False
-        if not shiboken6.isValid(self):
+    def _on_error(self, error: Exception, seq: int) -> None:
+        if seq != self._stats_seq or not shiboken6.isValid(self):
             return
         # 统计回落占位（仿 cuktech_panel 的离线渲染路径），并提示原因
         self._total_wh.setText("—")
@@ -1483,10 +1491,10 @@ class SessionCurveWidget(QWidget):
         self._service = None
         self._jobs = None
         self._session_id: int | None = None
-        self._in_flight = False
         # 请求代际号：show_session 每次提交自增，回调比对——容器在点列
         # 飞行中切换会话（点击行 B 时已 set_summary/set_period 写入 B 的
         # 状态）或精度时，旧响应直接丢弃，避免"曲线是 A、标题是 B"。
+        # v0.4.0 起新单立即提交（旧 _in_flight 布尔会吞掉新请求）
         self._points_epoch = 0
         self._export_in_flight = False
         self._downsample = 200  # 缺省与精度下拉「200 点」档一致
@@ -1623,9 +1631,9 @@ class SessionCurveWidget(QWidget):
                 on_success=self._on_stats,
                 on_error=self._on_stats_error,
             )
-        if self._in_flight:
-            return
-        self._in_flight = True
+        # 序号守卫：点列飞行中再切会话/精度立即重发新单（epoch 自增），
+        # 旧响应迟到按 epoch 丢弃。原 _in_flight 布尔会直接吞掉新请求，
+        # 用户要等旧响应返回后才能重试（代码审查 2026-09-28 medium）
         self._points_epoch += 1
         epoch = self._points_epoch
         downsample = self._downsample
@@ -1702,7 +1710,6 @@ class SessionCurveWidget(QWidget):
             self._summary_label.setText(f"{avg_v:.1f}V · {avg_a:.2f}A")
 
     def _on_points(self, payload: dict | None, epoch: int | None = None) -> None:
-        self._in_flight = False
         if not shiboken6.isValid(self):
             return
         # 过期响应丢弃：飞行中已切换会话/精度（epoch 已自增）
@@ -1794,7 +1801,6 @@ class SessionCurveWidget(QWidget):
         Toast.info(self, f"CSV 导出失败：{error}", 4000)
 
     def _on_error(self, error: Exception, epoch: int | None = None) -> None:
-        self._in_flight = False
         if not shiboken6.isValid(self):
             return
         # 过期请求的错误不提示（用户已切换到别的内容）

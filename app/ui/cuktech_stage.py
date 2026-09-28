@@ -613,6 +613,11 @@ class PortCardGrid(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._cards: dict[int, dict] = {}
+        # 写命令在途的端口集合（pending 遮蔽）：开关点击到 service 回调
+        # 之间到达的 SSE port_update/status 帧携带的 enabled 不得回跳
+        # 开关视觉（设备快照滞后于用户操作）。值暂存目标态，解除 pending
+        # 时由面板整帧刷新落到真实值
+        self._pending_toggles: set[int] = set()
         grid = QVBoxLayout(self)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(10)
@@ -728,9 +733,16 @@ class PortCardGrid(QWidget):
         proto_active = protocol not in ("", "idle")
         card["proto"].setText(protocol if protocol else "—")
         self._style_proto(card["proto"], proto_active)
-        if card["switch"].isChecked() != enabled:
-            _sync_switch(card["switch"], enabled)
-        self._set_port_icon(card, port, enabled)
+        # 写命令在途（pending）时 SSE 帧不得回跳开关视觉：SSE 帧来自设备
+        # 轮询快照，可能仍携带旧 enabled，回跳会让用户以为操作失败再点
+        # 一次造成反向切换。pending 期间图标也不随旧帧切换；解除后由
+        # done 回调的重拉整帧落到真实值
+        if port in self._pending_toggles:
+            pass
+        else:
+            if card["switch"].isChecked() != enabled:
+                _sync_switch(card["switch"], enabled)
+            self._set_port_icon(card, port, enabled)
         # 充电中描边用端口色（仅充电态变化时重写样式表，避免每秒重设）
         charging = power > 0
         if card["charging"] != charging:
@@ -807,8 +819,32 @@ class PortCardGrid(QWidget):
 
     # ---------- 交互 ----------
 
+    def begin_toggle(self, port: int) -> None:
+        """面板侧写命令提交前调用：该口进入 pending 遮蔽。
+
+        pending 期间 SSE 帧不回跳开关与图标（见 _render_port）；面板在
+        done/failed 回调后必须调用 :meth:`end_toggle` 释放。
+        """
+        self._pending_toggles.add(port)
+
+    def end_toggle(self, port: int) -> None:
+        """写命令回调（成功或失败）后解除 pending 遮蔽。
+
+        解除后紧随的 refresh_data 整帧（面板 done 回调里已有）会把开关
+        落到设备真实状态。
+        """
+        self._pending_toggles.discard(port)
+
     def _on_switch(self, port: int, on: bool, switch) -> None:
-        """开关点击：发 port_toggle 由面板调 service；本组件不发请求。"""
+        """开关点击：发 port_toggle 由面板调 service；本组件不发请求。
+
+        pending 端口开关被禁用，理论上点不到；这里的二次检查防的是
+        拥塞窗口内 disabled 尚未生效的极窄竞态。
+        """
+        if port in self._pending_toggles:
+            # 立刻回弹视觉并同步进度条，避免开关停在用户点到的位置
+            _sync_switch(switch, not on)
+            return
         self.port_toggle.emit(port, on)
 
 

@@ -1473,10 +1473,15 @@ class CuktechPanel(QWidget):
     # ---------- 端口开关（PortCardGrid.port_toggle 写路径） ----------
 
     def _on_port_toggle(self, port: int, on: bool) -> None:
-        """端口卡开关切换：提交 cuktech_set_port(port, on)，成功重拉状态。"""
+        """端口卡开关切换：提交 cuktech_set_port(port, on)，成功重拉状态。
+
+        提交前进入 pending 遮蔽：在途期间 SSE 帧的旧 enabled 不回跳
+        开关视觉（cuktech_stage.begin_toggle）。
+        """
         card = self._port_grid._cards.get(port)
         if card is not None:
             card["switch"].setEnabled(False)
+        self._port_grid.begin_toggle(port)
         self._jobs.submit(
             lambda: self._service.cuktech_set_port(port, on),
             on_success=lambda _, p=port, o=on: self._on_port_toggle_done(p, o),
@@ -1489,6 +1494,7 @@ class CuktechPanel(QWidget):
         card = self._port_grid._cards.get(port)
         if card is not None:
             card["switch"].setEnabled(True)
+        self._port_grid.end_toggle(port)
         Toast.info(self, f"已{'打开' if on else '关闭'} {_port_name(port)}", 2000)
         self.refresh_data()
 
@@ -1499,6 +1505,7 @@ class CuktechPanel(QWidget):
         card = self._port_grid._cards.get(port)
         if card is not None:
             card["switch"].setEnabled(True)
+        self._port_grid.end_toggle(port)
         # 失败回弹开关视觉状态（按最近一帧已知状态整帧重渲），等下一
         # 次轮询以真实值覆盖
         self._port_grid.update_state(self._status or {})

@@ -376,7 +376,7 @@ def test_history(theme: str) -> None:
     _drain_jobs()
     service.fail = False
     widget._on_sessions({"sessions": [], "total": 0, "page": 1,
-                         "limit": 50, "pages": 1})
+                         "limit": 50, "pages": 1}, widget._session_seq)
     app.processEvents()
     assert widget._empty_label.isVisibleTo(widget) or widget._empty_label.text() == "暂无充电会话"
     assert widget._page_label.text() == "第 1/1 页"
