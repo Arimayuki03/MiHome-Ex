@@ -53,19 +53,29 @@ if (-not (Test-Path $Pip)) {
 # ============================================================
 # 2. 激活 MSVC 编译环境
 # ============================================================
-$Vcvars = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-if (-not (Test-Path $Vcvars)) {
+# 本机默认装 Build Tools；CI（ilammy/msvc-dev-cmd）已配好环境变量，
+# 无需再跑 vcvars——检测到 PATH 里有 cl.exe 即跳过探测。
+$VcvarsCandidates = @(
+    "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat",
+    "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat",
+    "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+)
+$Vcvars = $VcvarsCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$ClInPath = Get-Command cl.exe -ErrorAction SilentlyContinue
+if (-not $Vcvars -and -not $ClInPath) {
     Write-Host "[ERROR] VS Build Tools 2022 not found" -ForegroundColor Red
     Write-Host "Download: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022" -ForegroundColor Yellow
     exit 1
 }
 
-Write-Host "Activating MSVC environment..." -ForegroundColor Cyan
+if ($Vcvars) {
+    Write-Host "Activating MSVC environment..." -ForegroundColor Cyan
 
-$MsvcEnv = cmd /c "`"$Vcvars`" >nul 2>&1 && set"
-foreach ($Line in $MsvcEnv) {
-    if ($Line -match '^([^=]+)=(.*)$') {
-        [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
+    $MsvcEnv = cmd /c "`"$Vcvars`" >nul 2>&1 && set"
+    foreach ($Line in $MsvcEnv) {
+        if ($Line -match '^([^=]+)=(.*)$') {
+            [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
+        }
     }
 }
 # vcvars 在部分机器上不导出该变量，缺失时兜底；已有值则尊重本机 SDK
