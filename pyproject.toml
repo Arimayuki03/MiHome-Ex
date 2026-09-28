@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mihome-ex"
-version = "0.2.0"
+version = "0.3.0"
 description = "米家设备的 Windows 桌面控制端（扩展版），基于 mijiaAPI 构建；由 MiHome-Windows fork 而来"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
-authors = [{ name = "MiHome-Ex contributors (based on MiHome-Windows by huanyuejue)" }]
+authors = [{ name = "Arimayuki03 and MiHome-Ex contributors (based on MiHome-Windows by huanyuejue)" }]
 dependencies = [
     # 上游锁死在 4.x：大版本升级可能破坏适配层，必须人工验证后放行
     "mijiaAPI>=4.2,<5",
@@ -18,6 +18,8 @@ dependencies = [
     "qrcode>=8",
     # Material Design 图标，用于所有 UI 图标渲染
     "qtawesome>=1.4",
+    # CUKTECH 充电器本地 HTTP 客户端与版本检测
+    "requests>=2.31",
     # SiliconUI 组件需要 numpy 进行动画插值计算
     "numpy",
     # SiliconUI 内置组件在 Python 3.10 下需要 Self / TypeAlias 类型别名

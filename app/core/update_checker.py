@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import requests
 from PySide6.QtCore import QObject, Signal
 
-_REPO = "huanyuejue/MiHome-Windows"
+_REPO = "Arimayuki03/MiHome-Ex"
 LATEST_API = f"https://api.github.com/repos/{_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{_REPO}/releases/latest"
 

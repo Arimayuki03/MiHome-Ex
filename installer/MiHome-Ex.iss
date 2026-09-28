@@ -6,7 +6,7 @@
 ; 再用 ISCC 编译本脚本得到 installer\Output\MiHome-Ex-setup-<版本>.exe
 
 #define MyAppName "MiHome-Ex"
-#define MyAppVersion ReadIni(SourcePath + "\version.ini", "version", "value", "0.2.0")
+#define MyAppVersion ReadIni(SourcePath + "\version.ini", "version", "value", "0.3.0")
 #define MyAppPublisher "MiHome-Ex contributors"
 #define MyAppExeName "MiHome-Ex.exe"
 
@@ -16,8 +16,8 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-AppPublisherURL=https://github.com/huanyuejue/MiHome-Windows
-AppSupportURL=https://github.com/huanyuejue/MiHome-Windows
+AppPublisherURL=https://github.com/Arimayuki03/MiHome-Ex
+AppSupportURL=https://github.com/Arimayuki03/MiHome-Ex
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}

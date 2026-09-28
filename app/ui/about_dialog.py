@@ -14,7 +14,7 @@ from app.ui.overlay_dialog import OverlayDialog
 from app.ui.si_theme import SiColors
 from app.ui.toast import Toast
 
-GITHUB_URL = "https://github.com/huanyuejue/MiHome-Windows"
+GITHUB_URL = "https://github.com/Arimayuki03/MiHome-Ex"
 MIJIA_API_URL = "https://github.com/Do1e/mijia-api"
 
 

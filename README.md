@@ -1,34 +1,76 @@
+<div align="center">
+
 # MiHome-Ex
 
-米家设备的 Windows 桌面控制端（扩展版）。基于 [huanyuejue/MiHome-Windows](https://github.com/huanyuejue/MiHome-Windows) fork 改造，并基于 [mijiaAPI](https://github.com/Do1e/mijia-api)
-构建图形界面，扫码登录后即可在本地窗口中查看和控制家里的全部米家设备。
+**米家设备的 Windows 桌面控制端（扩展版）**
 
-> **注意：当前项目仍处于早期版本。** 作者个人米家设备有限，无法对各类设备做针对性适配测试，因此 UI 和操作逻辑的完善度不算很高。不过基础使用（扫码登录、设备列表与常用控制、托盘、小爱语音等）已无大碍，但需适配更多设备功能则需要社区支持了。
+基于 [mijiaAPI](https://github.com/Do1e/mijia-api) 构建图形界面，扫码登录后即可在本地窗口中查看和控制家里的全部米家设备。
+由 [huanyuejue/MiHome-Windows](https://github.com/huanyuejue/MiHome-Windows) fork 改造而来，并集成了 [kairui1108/cuktech-ble-server](https://github.com/kairui1108/cuktech-ble-server) 作为本地 BLE 数据源。
 
-## 功能
+[![Release](https://img.shields.io/github/v/release/Arimayuki03/MiHome-Ex?logo=github&label=%E7%89%88%E6%9C%AC)](https://github.com/Arimayuki03/MiHome-Ex/releases/latest)
+[![License](https://img.shields.io/github/license/Arimayuki03/MiHome-Ex?label=%E8%AE%B8%E5%8F%AF%E8%AF%81)](LICENSE)
+[![Platform](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%2F11-blue?logo=windows)](https://github.com/Arimayuki03/MiHome-Ex)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Qt](https://img.shields.io/badge/Qt-6.7%20%7C%20PySide6-41CD52?logo=qt&logoColor=white)](https://www.qt.io/)
+[![Stars](https://img.shields.io/github/stars/Arimayuki03/MiHome-Ex?style=social)](https://github.com/Arimayuki03/MiHome-Ex/stargazers)
+
+**[下载最新版](https://github.com/Arimayuki03/MiHome-Ex/releases/latest) · [功能一览](#-功能) · [快速开始](#-快速开始) · [构建](#-构建可执行文件) · [参与贡献](#-参与贡献)**
+
+</div>
+
+---
+
+> [!IMPORTANT]
+> 当前项目仍处于早期版本。作者个人米家设备有限，无法对各类设备做针对性适配测试，UI 和操作逻辑的完善度不算很高。基础使用（扫码登录、设备列表与常用控制、托盘、小爱语音等）已无大碍，适配更多设备功能则需要社区支持。
+>
+> 本程序与小米官方无关，不含任何担保，请自行承担使用风险，并遵守小米的服务条款。
+
+## ✨ 功能
+
+### 米家设备控制（继承自上游）
 
 - **扫码登录**：米家 APP 扫二维码，登录凭据与上游依赖的 CLI 共用
 - **设备列表**：按家庭、房间分组，实时显示在线状态，支持隐藏无功能设备
 - **设备控制**：根据设备 spec 元数据自动生成控件——布尔属性映射开关、数值属性映射滑块（自动套用范围与步长）、枚举属性映射下拉框
 - **动作执行**：设备支持的动作渲染为按钮，执行前二次确认
 - **系统托盘**：最小化到托盘，支持快捷设备控制、小爱音响快捷控制、小爱语音指令，托盘快捷窗口支持单列/双列卡片切换
-- **主题配色**：深色 / 浅色 / 跟随系统（设置中切换，米家绿主题色两种模式一致）；托盘图标自动跟随 Windows 任务栏深浅色
+- **主题配色**：深色 / 浅色 / 跟随系统（米家绿主题色两种模式一致）；托盘图标自动跟随 Windows 任务栏深浅色
 - **界面缩放**：50%–200% 无级调节（叠加在系统缩放之上），需重启生效
 - **开机自启动**：可选，写入当前用户注册表（HKCU Run）
 - **小爱语音**：主界面右下角悬浮按钮，输入文字指令发送给在线小爱音箱，可指定默认输出音箱
 - **版本检测**：启动时自动检查 GitHub Releases 新版本，也可在关于页手动检测
-- **本地缓存**：设置、托盘/工作台配置与设备缓存存放在用户数据目录（详见下方路径说明）
-- **上游可升级**：mijiaAPI 仅作为 PyPI 依赖锁定在 `>=4.2,<5`，升级后跑 `python -m tests.smoke_test` 即可确认兼容性
 
-## 运行
+### CUKTECH 充电器本地控制（本 fork 扩展）
 
-要求 Python >= 3.10
+通过内置 BLE 服务端（扩展组件，随主程序启停）经蓝牙/局域网直连 [CUKTECH（酷态科）10 Ultra 充电器](https://github.com/kairui1108/cuktech-ble-server)，数据不经过米家云端：
 
-### 一键运行
+- **专用设备卡片与实时面板**：总功率、四口（C1/C2/C3/A）逐口功率、端口开关，SSE 推送实时更新、轮询兜底
+- **设备渲染舞台**：深浅色主题的充电器底图 + 端口模式图标（AI/均衡/单口/Mac 快充），可视化当前充电状态
+- **充电限额与延时关闭**：按口设置充到指定 Wh 自动断电（一次性/永久），快捷档 5/10/15/20/25 Wh
+- **充电会话历史**：会话列表筛选与翻页、单会话点级曲线（五项指标 + 快充协议标注）与 CSV 导出
+- **能量统计**：按端口/每小时/快充协议三维度统计图表
+- **托盘悬停弹窗**：托盘图标悬停即显示四口功率与总功率
+
+## 🚀 快速开始
+
+### 方式一：下载安装包（推荐）
+
+前往 [Releases](https://github.com/Arimayuki03/MiHome-Ex/releases/latest) 下载：
+
+| 文件 | 说明 |
+|------|------|
+| `MiHome-Ex-setup-<版本>.exe` | Inno Setup 安装包，双击安装，支持开机自启动 |
+| `MiHome-Ex-<版本>-x64-portable.zip` | 免安装绿色版，解压即用 |
+
+> 安装包/绿色版均内置 BLE 服务端扩展组件；不装也能用，充电器功能按组件缺失静默缺席。
+
+### 方式二：源码运行
+
+要求 Python >= 3.10。
 
 ```powershell
-git clone https://github.com/huanyuejue/MiHome-Windows.git
-cd MiHome-Windows
+git clone https://github.com/Arimayuki03/MiHome-Ex.git
+cd MiHome-Ex
 
 # 双击 start.bat，或命令行执行：
 start.bat
@@ -36,52 +78,27 @@ start.bat
 
 `start.bat` 自动完成：创建 venv → 安装依赖 → 启动程序，无需手动配置环境。
 
-### 手动运行
+<details>
+<summary>手动运行</summary>
 
 ```powershell
-git clone https://github.com/huanyuejue/MiHome-Windows.git
-cd MiHome-Windows
+git clone https://github.com/Arimayuki03/MiHome-Ex.git
+cd MiHome-Ex
 
 python -m venv .venv
 .venv\Scripts\pip install -e .
 .venv\Scripts\python.exe run.py
 ```
 
-首次启动会弹出扫码窗口；之后凭据长期复用，失效时再次扫码即可。
+</details>
 
-## 本地缓存与数据存储
+> [!TIP]
+> 首次启动会弹出扫码窗口；之后凭据长期复用，失效时再次扫码即可。
+> 充电器功能的开发态联调需另行 clone [cuktech-ble-server](https://github.com/kairui1108/cuktech-ble-server) 到同级目录，详见其仓库说明。
 
-程序运行时会在以下位置生成配置和缓存文件，方便用户备份或排查问题：
+## 🧱 构建可执行文件
 
-### 应用数据（Releases版）
-
-路径：`%LOCALAPPDATA%\MiHome-Windows\`
-
-| 文件 | 说明 |
-|------|------|
-| `settings.json` | 应用设置（主题、缩放、托盘、自启动等） |
-| `tray.json` | 托盘快捷控制面板的设备列表配置 |
-| `workbench.json` | 工作台（设备详情页）的自定义布局 |
-| `devices_cache.json` | 设备列表与状态缓存，启动时优先从缓存加载以加快首屏显示 |
-
-> 路径中的 `%LOCALAPPDATA%` 通常为 `C:\Users\<用户名>\AppData\Local`。
-> 旧版曾写在 exe 同目录，首次启动会自动迁移至此。
-
-### 应用数据（源码模式）
-
-路径：项目根目录（与 `run.py` 同级），文件名与Releases版一致
-
-### 米家账号登录凭据
-
-路径：`~/.config/mijia-api/auth.json`
-
-这是 mijiaAPI 的认证文件，扫码登录后长期复用。失效时程序会自动提示重新扫码。
-
-> 路径中的 `~` 在 Windows 上为 `C:\Users\<用户名>`。
-
-## 构建可执行文件
-
-项目使用 **[Nuitka](https://nuitka.net/)** 将 Python 源码编译打包为原生 Windows 可执行文件（standalone 模式：把 Python 解释器、全部依赖与资源文件整合进一个免安装目录，最终产出 `dist\MiHome-Windows.exe`）。Nuitka 是真编译器——把代码编译为 C 再编译为机器码，而非 PyInstaller 式的"打包字节码"，这也是需要 VS Build Tools 的原因。
+项目使用 **[Nuitka](https://nuitka.net/)** 将 Python 源码编译打包为原生 Windows 可执行文件（standalone 模式：把 Python 解释器、全部依赖与资源文件整合进一个免安装目录，最终产出 `dist\MiHome-Ex.exe`）。Nuitka 是真编译器——把代码编译为 C 再编译为机器码，而非 PyInstaller 式的"打包字节码"，这也是需要 VS Build Tools 的原因。
 
 ### 前置条件
 
@@ -97,20 +114,20 @@ python -m venv .venv
 ### 一键构建
 
 ```powershell
-git clone https://github.com/huanyuejue/MiHome-Windows.git
-cd MiHome-Windows
+git clone https://github.com/Arimayuki03/MiHome-Ex.git
+cd MiHome-Ex
 
 # 双击 build_msvc.bat 或运行：
 .\build.ps1
 ```
 
-脚本自动完成：创建 venv → 安装依赖（含 Nuitka 本体）→ 激活 MSVC 编译环境 → Nuitka 编译 → 输出到 `dist/MiHome-Windows.exe`。
+脚本自动完成：创建 venv → 安装依赖（含 Nuitka 本体）→ 激活 MSVC 编译环境 → Nuitka 编译主程序 → Nuitka 编译内置 BLE 服务端 → 输出到 `dist/`。
 
-构建参数（打包资源清单、图标、排除项等）集中维护在 `build.ps1` 的 `$NuitkaArgs`；`build_msvc.bat` 只是转发到它的双击入口。
+构建参数（打包资源清单、图标、排除项等）集中维护在 `build.ps1` 的 `$NuitkaArgs`；`build_msvc.bat` 只是转发到它的双击入口。安装包用 Inno Setup 编译 `installer\MiHome-Ex.iss`（版本号单一信源为 `installer\version.ini`）。
 
-首次构建耗时较长（创建 venv + 下载依赖 + Nuitka 编译，通常 5–15 分钟，视机器而定）
+首次构建耗时较长（创建 venv + 下载依赖 + Nuitka 编译，通常 5–15 分钟，视机器而定）。
 
-## 项目结构
+## 📁 项目结构
 
 ```
 app/
@@ -118,17 +135,30 @@ app/
 │   ├── service.py              # mijiaAPI 适配层，全项目唯一 import mijiaAPI 的模块
 │   ├── jobs.py                 # 串行任务队列，所有米家网络调用的后台通道
 │   ├── models.py               # 数据模型
+│   ├── cuktech_client.py       # CUKTECH 充电器 HTTP 客户端（经 jobs 队列）
+│   ├── cuktech_events.py       # CUKTECH SSE 实时事件流
+│   ├── ble_server_manager.py   # 内置 BLE 服务端子进程生命周期管理
 │   ├── _json_store.py          # JSON 持久化公共基础（数据目录/迁移/原子写）
 │   ├── cache.py                # 设备缓存
 │   ├── settings_store.py       # 应用设置持久化（含开机自启动注册表）
 │   ├── tray_store.py           # 托盘配置持久化
 │   ├── workbench_store.py      # 工作台配置持久化
+│   ├── icon_store.py           # 设备图标获取与缓存
 │   ├── update_checker.py       # GitHub Releases 新版本检查（后台线程 + 信号）
 │   └── restart.py              # 应用自重启（缩放等设置需重启生效时一键重启）
 ├── ui/                         # 界面层
 │   ├── main_window.py          # 主窗口（无边框标题栏）
+│   ├── cuktech_panel.py        # CUKTECH 充电器卡片 + 详情面板（实时页）
+│   ├── cuktech_history.py      # 充电会话历史 + 能量统计
+│   ├── cuktech_limits.py       # 充电限额 + 延时关闭
+│   ├── cuktech_stage.py        # 充电器渲染舞台与端口卡网格
+│   ├── cuktech_visuals.py      # 多指标曲线等可视化件
+│   ├── cuktech_port_detail.py  # 单口详情弹窗
+│   ├── cuktech_protocols.py    # 快充协议显示
+│   ├── cuktech_quality.py      # 数据质量指示
 │   ├── tray/                   # 系统托盘
 │   │   ├── quick_window.py     #   快捷控制面板（单列/双列卡片）
+│   │   ├── cuktech_hover.py    #   充电器托盘悬停功率弹窗
 │   │   ├── audio_bar.py        #   音响控制栏
 │   │   ├── controller.py       #   托盘控制器
 │   │   └── manager_dialog.py   #   托盘设备管理对话框
@@ -149,7 +179,7 @@ app/
 │   ├── typewriter.py           # 打字机效果组件
 │   ├── si_theme.py             # 主题中枢（深/浅调色板 + 全局 QSS 生成）
 │   ├── theme_service.py        # 主题编排（跟随系统/浅色/深色）
-│   ├── restart.py              # 应用自重启
+│   ├── assets/                 # CUKTECH 充电器渲染素材
 │   ├── icon.ico / icon.png     # 应用图标
 │   └── tray_icon.png / tray_icon_light.png  # 托盘图标
 ├── siui/                       # 内置 SiliconUI 组件库（GPL-3.0）
@@ -158,19 +188,54 @@ app/
 │   └── gui/                    # 图形工具
 └── __init__.py                 # 版本号 + 工具函数
 
-tests/
-├── smoke_test.py               # 上游升级后的接口兼容性自检
-└── theme_test.py               # 主题切换回归（离屏像素断言）
-
+tests/                          # 接口兼容性自检 / 主题回归 / CUKTECH 面板测试
 run.py                          # 程序入口
 start.bat                       # Windows 一键运行（双击运行）
 build_msvc.bat                  # Windows 一键构建（双击运行，转发 build.ps1）
 build.ps1                       # PowerShell 构建脚本（Nuitka 参数唯一来源）
+installer/                      # Inno Setup 安装包工程
 pyproject.toml                  # 项目配置
 LICENSE                         # GPL-3.0 许可证
 ```
 
-## 依赖说明
+## 💾 本地缓存与数据存储
+
+程序运行时会在以下位置生成配置和缓存文件，方便用户备份或排查问题：
+
+### 应用数据（Releases 版）
+
+路径：`%LOCALAPPDATA%\MiHome-Windows\`
+
+| 文件/目录 | 说明 |
+|------|------|
+| `settings.json` | 应用设置（主题、缩放、托盘、自启动等） |
+| `tray.json` | 托盘快捷控制面板的设备列表配置 |
+| `workbench.json` | 工作台（设备详情页）的自定义布局 |
+| `devices_cache.json` | 设备列表与状态缓存，启动时优先从缓存加载以加快首屏显示 |
+| `ble-server/` | 内置 BLE 服务端数据（`config.yaml`、充电历史 `port_history.db`） |
+
+> 路径中的 `%LOCALAPPDATA%` 通常为 `C:\Users\<用户名>\AppData\Local`。
+> 旧版曾写在 exe 同目录，首次启动会自动迁移至此。
+
+### 应用数据（源码模式）
+
+路径：项目根目录（与 `run.py` 同级），文件名与 Releases 版一致。
+
+### 米家账号登录凭据
+
+路径：`~/.config/mijia-api/auth.json`
+
+这是 mijiaAPI 的认证文件，扫码登录后长期复用。失效时程序会自动提示重新扫码。
+
+> 路径中的 `~` 在 Windows 上为 `C:\Users\<用户名>`。
+
+## 🔒 隐私说明
+
+- 本程序**不上传任何数据**：米家通信经 mijiaAPI 直连小米服务，CUKTECH 充电器数据走本机蓝牙/局域网（`127.0.0.1`），全部不出本机
+- 唯一的对外请求是**版本检测**（访问 GitHub API 拉取最新 Release），可在设置中忽略提示
+- 认证文件、设备缓存、充电历史均只保存在本机用户目录，卸载也不会自动删除，可自行清理
+
+## 📦 依赖说明
 
 | 包名 | 版本 | 用途 |
 |------|------|------|
@@ -178,20 +243,39 @@ LICENSE                         # GPL-3.0 许可证
 | PySide6 | >=6.7 | Qt6 绑定 |
 | qrcode | >=8 | 登录二维码生成 |
 | qtawesome | >=1.4 | Material Design 图标 |
+| requests | - | CUKTECH 充电器本地 HTTP / 版本检测 |
 | numpy | - | SiliconUI 动画插值 |
 | typing_extensions | - | SiliconUI 在 Python 3.10 下所需的类型别名 |
 
-## 开源许可
+## 🤝 参与贡献
+
+欢迎 Issue 与 PR！
+
+1. Fork 本仓库并创建特性分支（`git checkout -b feat/xxx`）
+2. 提交更改（`git commit -m "feat: xxx"`）
+3. 推送到分支（`git push origin feat/xxx`）并发起 Pull Request
+
+适配了新设备、修了 Bug，欢迎在 [Issues](https://github.com/Arimayuki03/MiHome-Ex/issues) 反馈。
+
+## 📄 开源许可
 
 本项目基于 [GPL-3.0](LICENSE) 或更高版本发布。
 
-### 第三方组件
+### 致谢
 
-本程序使用了以下 GPL-3.0 协议的开源组件，在此向原作者致谢：
+本程序使用了以下开源组件，在此向原作者致谢：
 
-- [mijia-api](https://github.com/Do1e/mijia-api) - 米家 API 封装
-- [PySide6-SiliconUI](https://github.com/H1DDENADM1N/PySide6-SiliconUI) - UI 组件库（已内置至 `app/siui/`）
+| 项目 | 协议 | 说明 |
+|------|------|------|
+| [huanyuejue/MiHome-Windows](https://github.com/huanyuejue/MiHome-Windows) | GPL-3.0 | 本项目 fork 的上游 |
+| [mijia-api](https://github.com/Do1e/mijia-api) | GPL-3.0 | 米家 API 封装 |
+| [PySide6-SiliconUI](https://github.com/H1DDENADM1N/PySide6-SiliconUI) | GPL-3.0 | UI 组件库（已内置至 `app/siui/`） |
+| [kairui1108/cuktech-ble-server](https://github.com/kairui1108/cuktech-ble-server) | MIT | CUKTECH 充电器 BLE 服务端（内置为扩展组件） |
 
 对本项目代码的使用、修改与分发同样须遵循 GPL-3.0。
 
-本程序不含任何担保。请自行承担使用风险，并遵守小米的服务条款。
+<div align="center">
+
+**如果这个项目对你有帮助，欢迎点个 Star ⭐**
+
+</div>
