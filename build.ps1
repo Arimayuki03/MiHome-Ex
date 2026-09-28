@@ -220,6 +220,19 @@ if (-not (Test-Path $ServerExe) -and (Test-Path $ServerVenvPy)) {
         "--standalone"
         "--windows-console-mode=disable"
         "--include-package=cuktech_ble"
+        # winrt 是 PEP420 命名空间包，winrt-windows-* 子轮各挂一片子命名
+        # 空间；pywinrt 运行期按需 import 事件参数所在模块（如广播回调的
+        # winrt.windows.foundation.collections）。必须逐模块点名让 Nuitka
+        # 编进产物，否则运行期直接抛 ModuleNotFoundError（磁盘补拷无效，
+        # 编译期 finder 已登记该模块不存在）。清单按 venv 实际子模块枚举。
+        "--include-module=winrt.windows.devices.bluetooth"
+        "--include-module=winrt.windows.devices.bluetooth.advertisement"
+        "--include-module=winrt.windows.devices.bluetooth.genericattributeprofile"
+        "--include-module=winrt.windows.devices.enumeration"
+        "--include-module=winrt.windows.devices.radios"
+        "--include-module=winrt.windows.foundation"
+        "--include-module=winrt.windows.foundation.collections"
+        "--include-module=winrt.windows.storage.streams"
         # 服务端 web 静态前端（内存预读 + FileResponse 兜底，必须随包）
         "--include-data-dir=web=web/"
         "--include-data-files=config.yaml=config.default.yaml"
@@ -249,12 +262,22 @@ if (-not (Test-Path $ServerExe) -and (Test-Path $ServerVenvPy)) {
     }
     if ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $TempServerBuild "ha_server.dist"))) {
         # winrt 是 PEP420 命名空间包（无 __init__.py，winrt-windows-* 子轮
-        # 各自往 winrt/windows/... 放纯 Python shim），Nuitka 的
-        # --include-package 对这类包只带走了 pyd、漏掉 shim，运行期 BLE
-        # 扫描回调报 ModuleNotFoundError。编译后从 venv 整树补拷（纯 py）。
-        $WinrtShimSrc = Join-Path $ServerRoot ".venv\Lib\site-packages\winrt\windows"
+        # 各自往 winrt/windows/... 放纯 Python shim），Nuitka 对这类包的
+        # 处理不完整：dist 里缺 windows/ 下的 py shim，也缺根级的
+        # _winrt_windows_foundation_collections.pyd（广播包解析必需，
+        # 缺了它 BLE 扫描回调全炸、永远发现不了充电器）。编译后按 venv
+        # 清单把 winrt 根级 pyd 与 windows/ 树整体补齐。
+        $WinrtVenv = Join-Path $ServerRoot ".venv\Lib\site-packages\winrt"
+        $WinrtDist = Join-Path $TempServerBuild "ha_server.dist\winrt"
+        Get-ChildItem $WinrtVenv -Filter "_winrt*.pyd" | ForEach-Object {
+            $dst = Join-Path $WinrtDist $_.Name
+            if (-not (Test-Path $dst)) {
+                Copy-Item $_.FullName $dst
+            }
+        }
+        $WinrtShimSrc = Join-Path $WinrtVenv "windows"
         if (Test-Path $WinrtShimSrc) {
-            Copy-Item $WinrtShimSrc (Join-Path $TempServerBuild "ha_server.dist\winrt\windows") -Recurse -Force
+            Copy-Item $WinrtShimSrc (Join-Path $WinrtDist "windows") -Recurse -Force
         }
         New-Item -ItemType Directory -Force -Path "dist\ble-server" | Out-Null
         Copy-Item (Join-Path $TempServerBuild "ha_server.dist\*") "dist\ble-server" -Recurse -Force
