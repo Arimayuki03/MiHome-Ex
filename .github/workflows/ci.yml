@@ -26,6 +26,10 @@ jobs:
   test:
     name: 测试 (Python ${{ matrix.python }})
     runs-on: windows-latest
+    env:
+      # runner 默认 cp1252：测试输出中文必须强制 UTF-8，否则 UnicodeEncodeError
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
     strategy:
       fail-fast: false
       matrix:
@@ -80,6 +84,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: test
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
     permissions:
       contents: write
     steps:
