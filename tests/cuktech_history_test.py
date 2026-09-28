@@ -9,6 +9,11 @@ SessionHistoryWidget / EnergySummaryWidget / SessionCurveWidget、灌假
 sessions / energy-stats / energy-protocols / session-points 数据，断言
 grab() 非全空白像素；暗/亮两种主题各来一遍 + retheme。service 用假门面
 （只实现三个组件用到的 cuktech_* 签名），不发起任何网络请求。
+
+另含 d0b73ac 序号守卫的竞态行为测试（3.6 节）：用挂起门
+（FakeService.hold/release，threading.Event）把指定第 N 次调用阻塞在
+假服务里构造「旧单在飞、新单已提交」的在途窗口，断言陈旧响应/错误
+被丢弃、连发 refresh 背压早退。
 """
 
 import atexit
@@ -16,6 +21,7 @@ import copy
 import os
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -148,11 +154,27 @@ FAKE_CHART_24H = {
 }
 
 
+class _CallGate:
+    """单次调用挂起门：entered=调用线程已进入阻塞，release=放行。"""
+
+    __slots__ = ("on_call", "entered", "release")
+
+    def __init__(self, on_call: int):
+        self.on_call = on_call
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+
 class FakeService:
     """假门面：只实现历史/统计/曲线组件用到的 cuktech_* 签名，零网络。
 
     记录 sessions 的调用参数（端口/周期/页码）用于断言筛选透传；
     fail=True 时所有方法抛异常（服务不可达路径）。
+
+    竞态测试挂起门：hold(method, n) 让第 n 次调用（文件内 1 起计数）
+    阻塞在假服务里构造「旧单在飞」窗口；wait_held 确认工作线程已被
+    钉住，release(method, n) 按单放行。hold 前必须 release_existing()
+    清掉上一轮遗留，防泄漏到后续用例。
     """
 
     def __init__(self, fail=False):
@@ -167,23 +189,75 @@ class FakeService:
         self.chart_payload: dict = copy.deepcopy(FAKE_CHART_24H)
         # 会话点列可运行期替换（协议切换/已知值测试用）
         self.points_payload: dict = copy.deepcopy(FAKE_POINTS)
+        # 会话列表可运行期替换（竞态测试区分新旧响应渲染用）
+        self.sessions_payload: dict = copy.deepcopy(FAKE_SESSIONS_PAGE1)
+        # 挂起门：方法名 -> [_CallGate]
+        self._gates: dict[str, list[_CallGate]] = {}
+
+    def hold(self, method: str, on_call: int) -> None:
+        """让第 on_call 次调用 method（1 起）阻塞在服务里直到放行。"""
+        self._gates.setdefault(method, []).append(_CallGate(on_call))
+
+    def wait_held(self, method: str, on_call: int,
+                  timeout_s: float = 5.0) -> bool:
+        """等待第 on_call 次调用确实进入挂起门（工作线程已阻塞）。"""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            gates = self._gates.get(method, [])
+            if any(g.on_call == on_call and g.entered.is_set()
+                   for g in gates):
+                return True
+            time.sleep(0.01)
+        return False
+
+    def release(self, method: str, on_call: int | None = None) -> None:
+        """放行挂起门：指定 on_call 只放行那一单；缺省放行该方法全部。"""
+        gates = self._gates.get(method, [])
+        for g in gates:
+            if on_call is None or g.on_call == on_call:
+                g.release.set()
+        self._gates[method] = [
+            g for g in gates if not (on_call is None or g.on_call == on_call)]
+
+    def release_existing(self) -> None:
+        """放行所有仍被阻塞的调用并清空全部挂起门（用例收尾防泄漏）。"""
+        for gates in self._gates.values():
+            for g in gates:
+                g.release.set()
+        self._gates.clear()
+
+    def _gate(self, method: str, call_no: int) -> None:
+        """命中挂起门则阻塞调用线程；30s 未放行抛错（测试僵死护栏）。"""
+        for g in self._gates.get(method, []):
+            if g.on_call == call_no and not g.entered.is_set():
+                g.entered.set()
+                if not g.release.wait(timeout=30.0):
+                    raise RuntimeError(
+                        f"{method} 第 {call_no} 次调用挂起门 30s 未放行")
+                return
 
     def cuktech_sessions(self, port=None, period="today", limit=10, page=1):
         self.session_calls.append(
             {"port": port, "period": period, "limit": limit, "page": page})
+        # 载荷在进入挂起门前捕获：响应内容对应请求发出时刻——挂起期间
+        # 运行期替换 payload 不影响已被钉住的旧单响应，新旧单可分辨
+        payload = copy.deepcopy(self.sessions_payload)
+        self._gate("sessions", len(self.session_calls))
         if self.fail:
             raise RuntimeError("充电器服务连接失败")
         if page >= 2:
             return copy.deepcopy(FAKE_SESSIONS_PAGE2)
-        return copy.deepcopy(FAKE_SESSIONS_PAGE1)
+        return payload
 
     def cuktech_session_points(self, session_id: int, downsample: int = 0):
         self.points_calls.append((session_id, downsample))
+        payload = copy.deepcopy(self.points_payload)  # 进门前捕获（同上）
+        self._gate("points", len(self.points_calls))
         if self.fail:
             raise RuntimeError("充电器服务连接失败")
         if session_id == 404:
             return None
-        return copy.deepcopy(self.points_payload)
+        return payload
 
     def cuktech_energy_stats(self, period: str = "today"):
         self.stats_periods.append(period)
@@ -234,6 +308,18 @@ def _drain_jobs(rounds: int = 30) -> None:
         time.sleep(0.02)
         app.processEvents()
     app.processEvents()
+
+
+def _wait_until(predicate, timeout_s: float = 5.0, spin_ms: int = 20) -> bool:
+    """主线程轮询等待条件成立（后台线程侧状态，需 processEvents 泵事件）。"""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return True
+        time.sleep(spin_ms / 1000.0)
+    app.processEvents()
+    return bool(predicate())
 
 
 from app.core.jobs import JobExecutor
@@ -804,18 +890,253 @@ def test_metrics() -> None:
     print("3.5 五指标积分计算（恒定/阶梯/断档/空列） OK")
 
 
+# ---------- 3.6 序号守卫竞态行为（d0b73ac，挂起门构造在途窗口） ----------
+# 结构性盲区：其余用例每个动作后 _drain_jobs() 排空队列，测不到
+# 「旧单在飞、新单已提交」的窗口。本节用 FakeService.hold 把第 N 次
+# 调用阻塞在假服务线程里，主线程继续操作 UI 后再放行，断言陈旧
+# 响应/错误被序号守卫丢弃、陈旧任务执行侧早退不发网络请求。
+
+import app.ui.cuktech_history as _hist_mod
+
+
+def _toasts_patched():
+    """Toast.info 打桩：返回 (toasts 列表, 还原函数)。仿导出用例手法。"""
+    toasts: list[str] = []
+    orig = _hist_mod.Toast.info
+    _hist_mod.Toast.info = staticmethod(
+        lambda parent, text, duration_ms=4000: toasts.append(text))
+    return toasts, (lambda: setattr(_hist_mod.Toast, "info", orig))
+
+
+def test_session_list_race() -> None:
+    """会话列表：陈旧响应不渲染 + 陈旧任务执行侧早退（背压）。
+
+    时序（n0 为用例前累计调用数，pytest/直跑共享 service 均安全）：
+    首单渲染后 hold 第 2 单钉在假服务里（其响应载荷进门前已捕获为
+    STALE 标记）-> 飞行中改筛选 + 再 refresh（第 3/4 单入队）-> 放行
+    第 2 单：响应按 seq 守卫丢弃、第 3 单任务执行侧早退不发请求、
+    只有第 4 单真正发请求（被第 2 道挂起门钉住）并最终渲染新筛选数据。
+    """
+    apply_theme("dark")
+    service.release_existing()
+    service.sessions_payload = copy.deepcopy(FAKE_SESSIONS_PAGE1)
+    n0 = len(service.session_calls)
+    widget = SessionHistoryWidget()
+    widget.resize(760, 480)
+    widget.show()
+    try:
+        # 首单正常完成并渲染（2 行，ids 42/41）
+        widget.set_service(service, jobs)
+        assert _wait_until(lambda: len(service.session_calls) == n0 + 1
+                           and len(widget._session_rows) == 2), \
+            (service.session_calls[n0:], len(widget._session_rows))
+
+        # STALE 标记（PAGE2 单行 id40）+ hold 第 2、3 单；refresh -> 第 2
+        # 单真实调用被钉住，其响应载荷已在进服务前捕获为 STALE
+        service.sessions_payload = copy.deepcopy(FAKE_SESSIONS_PAGE2)
+        service.hold("sessions", n0 + 2)
+        service.hold("sessions", n0 + 3)
+        widget.refresh()
+        assert service.wait_held("sessions", n0 + 2), "第 2 单应被挂起"
+        assert len(widget._session_rows) == 2, "旧列表应保持渲染"
+
+        # 飞行中改筛选 + 再 refresh：第 3/4 单入队，序号到 4
+        widget._port_combo.setCurrentIndex(1)  # C1
+        widget.refresh()
+        assert widget._session_seq == 4, widget._session_seq
+
+        # 放行第 2 单：STALE 响应按 seq 守卫丢弃；第 3 单陈旧任务执行侧
+        # 早退不发请求；第 4 单发出真实请求并被第 2 道挂起门钉住。
+        # NEW 标记载荷（port=1, id39）：第 4 单进服务时才捕获，此刻换上
+        new_payload = {
+            "sessions": [dict(FAKE_SESSIONS_PAGE2["sessions"][0],
+                              id=39, port=1, total_wh=7.7)],
+            "total": 1, "page": 1, "limit": 50, "pages": 1}
+        service.sessions_payload = new_payload
+        service.release("sessions", n0 + 2)
+        assert service.wait_held("sessions", n0 + 3), "第 4 单应已发出并被挂起"
+        _drain_jobs(10)
+        # 3 次提交（refresh + 筛选 + refresh）实际只发出第 2、4 两单：
+        # 第 3 单早退——核心断言（守卫失效时第 3 单会发请求成第 4 次调用）
+        assert len(service.session_calls) == n0 + 3, \
+            f"陈旧任务应执行侧早退，实际 {service.session_calls[n0:]}"
+        assert service.session_calls[-1] == {
+            "port": 1, "period": "today", "limit": 50, "page": 1}, \
+            service.session_calls[-1]
+        # STALE 响应未渲染：列表仍是首单的 2 行（守卫失效会被换成 id40）
+        assert set(widget._sessions) == {42, 41}, set(widget._sessions)
+        assert len(widget._session_rows) == 2, len(widget._session_rows)
+        assert widget._page_label.text() == "第 1/2 页", \
+            widget._page_label.text()
+
+        # 放行第 4 单：NEW（port=1, id39）渲染——数据与最新筛选同源
+        service.release("sessions", n0 + 3)
+        assert _wait_until(lambda: set(widget._sessions) == {39}), \
+            set(widget._sessions)
+        _drain_jobs()
+        assert len(widget._session_rows) == 1, len(widget._session_rows)
+        assert widget._page_label.text() == "第 1/1 页", \
+            widget._page_label.text()
+        assert service.session_calls[-1]["port"] == 1, service.session_calls[-1]
+        assert len(service.session_calls) == n0 + 3, service.session_calls[n0:]
+    finally:
+        service.release_existing()
+        service.sessions_payload = copy.deepcopy(FAKE_SESSIONS_PAGE1)
+        widget.hide()
+        widget.deleteLater()
+    print("3.6a 会话列表竞态：陈旧响应不渲染/陈旧任务早退/连发背压 OK")
+
+
+def test_curve_epoch_race() -> None:
+    """曲线代际号：飞行中切会话只渲染 B（旧响应丢弃）；飞行中 clear()
+    后迟到的点列不得回渲染。"""
+    apply_theme("dark")
+    service.release_existing()
+    service.points_payload = copy.deepcopy(FAKE_POINTS)
+    widget = SessionCurveWidget()
+    widget.resize(560, 360)
+    widget.show()
+    app.processEvents()
+    p0 = len(service.points_calls)
+    try:
+        # 首单 A（42）正常完成渲染
+        widget.show_session(42, service, jobs)
+        assert _wait_until(lambda: len(service.points_calls) == p0 + 1
+                           and len(widget._curve._points) == 60), \
+            (service.points_calls[p0:], len(widget._curve._points))
+
+        # hold 第 2、3 单；show_session(42) -> 真实调用被钉住（载荷进
+        # 门前已捕获，即 A 的旧数据）
+        service.hold("points", p0 + 2)
+        service.hold("points", p0 + 3)
+        widget.show_session(42, service, jobs)
+        assert service.wait_held("points", p0 + 2), "第 2 单应被挂起"
+
+        # 飞行中切会话 41（B）：epoch 自增，第 3 单入队；B 载荷 +100W
+        service.points_payload = {
+            "points": [dict(p, power=p["power"] + 100.0)
+                       for p in FAKE_POINTS["points"]]}
+        widget.show_session(41, service, jobs)
+        assert widget._points_epoch == 3, widget._points_epoch
+
+        # 放行第 2 单：A 的旧响应按 epoch 守卫丢弃（曲线不动）；第 3 单
+        # （B）真实发出并被第 2 道门钉住——两次 show_session 恰好两次
+        # 真实调用，即旧单未吞新单未重发
+        service.release("points", p0 + 2)
+        assert service.wait_held("points", p0 + 3), "B 单应已发出并被挂起"
+        _drain_jobs(10)
+        assert len(service.points_calls) == p0 + 3, service.points_calls[p0:]
+        assert service.points_calls[-1] == (41, 200), service.points_calls[-1]
+        assert abs(widget._metrics["peak_w"] - 60.0) < 1e-6, \
+            f"A 的旧响应不应渲染：{widget._metrics['peak_w']}"
+
+        # 放行 B：渲染 +100W 载荷（峰值 160 而非 60，渲染来源可分辨）
+        service.release("points", p0 + 3)
+        assert _wait_until(
+            lambda: abs(widget._metrics.get("peak_w", 0.0) - 160.0) < 1e-6), \
+            widget._metrics
+        _drain_jobs()
+        assert widget._curve._points, "B 数据应渲染"
+
+        # ---------- 飞行中 clear()：迟到的点列不得把曲线渲回来 ----------
+        service.release_existing()
+        service.points_payload = copy.deepcopy(FAKE_POINTS)
+        service.hold("points", p0 + 4)
+        widget.show_session(42, service, jobs)  # 第 4 单真实调用被钉住
+        assert service.wait_held("points", p0 + 4), "第 4 单应被挂起"
+        widget.clear()  # 飞行中清空：epoch 自增，该单响应必被丢弃
+        epoch_after_clear = widget._points_epoch
+        assert widget._curve._points == [], "clear 应立即回到空态"
+        assert widget._metric_labels["wh"].text() == "—"
+        service.release("points", p0 + 4)  # 让挂起的真实调用完成返回
+        _drain_jobs()  # 泵事件让迟到回调抵达主线程
+        assert widget._points_epoch == epoch_after_clear, \
+            "迟到回调不得自增 epoch"
+        assert widget._curve._points == [], \
+            "clear 后迟到的点列响应应被 epoch 守卫丢弃"
+        assert widget._metric_labels["wh"].text() == "—", \
+            widget._metric_labels["wh"].text()
+        assert widget._summary_label.text() == "", widget._summary_label.text()
+    finally:
+        service.release_existing()
+        service.points_payload = copy.deepcopy(FAKE_POINTS)
+        widget.hide()
+        widget.deleteLater()
+    print("3.6b 曲线 epoch 竞态：飞行中切会话只渲染新会话/clear 不回渲染 OK")
+
+
+def test_stale_error_dropped() -> None:
+    """陈旧错误丢弃：旧单失败 + 新单已在飞 -> 不弹旧一单的失败 Toast。
+
+    旧/新单都按 fail=True 抛同一异常，失败文案不可分——以失败 Toast
+    恰好 1 条断言：当前最新一单（seq 仍匹配）的失败必须提示，被取代
+    的旧单（seq 已超越）的失败必须被守卫吞掉（守卫失效会弹 2 条）。
+    """
+    apply_theme("dark")
+    service.release_existing()
+    n0 = len(service.session_calls)
+    widget = SessionHistoryWidget()
+    widget.resize(760, 480)
+    widget.show()
+    toasts, restore = _toasts_patched()
+    try:
+        # 首单正常完成并渲染
+        widget.set_service(service, jobs)
+        assert _wait_until(lambda: len(service.session_calls) == n0 + 1
+                           and len(widget._session_rows) == 2), \
+            (service.session_calls[n0:], len(widget._session_rows))
+
+        # 第 2 单钉住 -> 飞行中 refresh 出第 3 单（序号超越）
+        service.hold("sessions", n0 + 2)
+        widget.refresh()
+        assert service.wait_held("sessions", n0 + 2), "第 2 单应被挂起"
+        widget.refresh()
+        assert widget._session_seq == 3, widget._session_seq
+
+        # 让钉住的旧单报错；放行后旧单 on_error(seq=2) 应被守卫丢弃，
+        # 紧随其后的第 3 单真实到达服务并报错（seq=3 当前，Toast 允许）
+        service.fail = True
+        service.release("sessions", n0 + 2)
+        assert _wait_until(lambda: len(service.session_calls) == n0 + 3), \
+            f"第 3 单应到达服务并失败：{service.session_calls[n0:]}"
+        _drain_jobs()
+        service.release_existing()
+        service.fail = False
+        failed = [t for t in toasts if "会话历史加载失败" in t]
+        assert len(failed) == 1, \
+            f"只有最新一单的失败应弹 Toast（旧一单被守卫丢弃）：{toasts}"
+    finally:
+        restore()
+        service.release_existing()
+        service.fail = False
+        widget.hide()
+        widget.deleteLater()
+    print("3.6c 陈旧错误丢弃：飞行中已被取代的失败不弹 Toast OK")
+
+
 # ---------- 4. 暗色主题重复全部用例 ----------
-test_history("dark")
-test_summary("dark")
-test_curve("dark")
-test_metrics()
+# 直跑（python tests/cuktech_history_test.py）按原顺序执行全部用例。
+# 包 __main__ 守卫的原因：pytest 收集本文件时模块级语句也会执行——
+# 全量用例在 import 期先跑一遍并 jobs.shutdown()，随后 pytest 再以
+# theme fixture 参数化重跑各用例时队列已毒丸关闭（提交的任务永不
+# 执行，6 个用例全数失败）。守卫后 pytest 直接驱动各用例：dark 先于
+# light 与原顺序一致，service 的调用计数断言均取 [-1]/相对差值，
+# 共享 FakeService 复跑安全（代码审查 2026-09-29 修复配套调整）。
+if __name__ == "__main__":
+    test_history("dark")
+    test_summary("dark")
+    test_curve("dark")
+    test_metrics()
+    test_session_list_race()
+    test_curve_epoch_race()
+    test_stale_error_dropped()
 
-# ---------- 5. 亮色主题重复全部用例 ----------
+    # ---------- 5. 亮色主题重复全部用例 ----------
 
-test_history("light")
-test_summary("light")
-test_curve("light")
+    test_history("light")
+    test_summary("light")
+    test_curve("light")
 
-jobs.shutdown()
-si_theme.set_theme("dark")
-print("CUKTECH HISTORY TEST ALL PASS")
+    jobs.shutdown()
+    si_theme.set_theme("dark")
+    print("CUKTECH HISTORY TEST ALL PASS")

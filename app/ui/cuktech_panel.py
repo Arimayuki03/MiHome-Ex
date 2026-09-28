@@ -173,6 +173,11 @@ _SCENE_NAMES: dict[int, str] = {1: "AI", 2: "数码生态", 3: "单口", 4: "均
 # EnergySummaryWidget.refresh 自带 _in_flight 去重，节流免重复排队）
 _SESSION_END_THROTTLE_S = 5.0
 
+# 端口开关「待释放」兜底超时（秒）：写命令成功后 pending 遮蔽不立即
+# 解除，等刷新帧确认设备 enabled 已翻转才释放（防 SSE 旧帧回跳开关）。
+# 若刷新链路异常拿不到确认帧，超时后强制释放，遮蔽不永久卡死。
+_PENDING_RELEASE_TIMEOUT_S = 8.0
+
 
 def _port_name(port: int) -> str:
     return _PORT_LABELS.get(port, f"P{port}")
@@ -740,6 +745,14 @@ class CuktechPanel(QWidget):
         self._limits: dict | None = None
         self._in_flight = False
         self._manual_refresh = False
+        # refresh_data(force) 置位：在途单回调结束后补拉一单（写回调
+        # 不被 _in_flight 去重吞掉，写入结果不必等下一轮 5s 轮询）
+        self._refetch_after_poll = False
+        # 端口开关「待释放」遮蔽：port -> (目标态 on, 提交时刻)。done
+        # 回调不立即 end_toggle——刷新数据落地前 SSE 旧帧（port_update
+        # 约 1s 一条）携带旧 enabled 会回跳开关；改由 _render_ports_view
+        # 在整帧数据确认 enabled==目标态后统一释放。超时兜底防卡死。
+        self._pending_release: dict[int, tuple[bool, float]] = {}
         # 供 retheme 重设的构造期内联样式件
         self._section_title_labels: list[QLabel] = []
         self._section_icons: list[tuple[QLabel, str]] = []
@@ -1494,9 +1507,17 @@ class CuktechPanel(QWidget):
         card = self._port_grid._cards.get(port)
         if card is not None:
             card["switch"].setEnabled(True)
-        self._port_grid.end_toggle(port)
         Toast.info(self, f"已{'打开' if on else '关闭'} {_port_name(port)}", 2000)
-        self.refresh_data()
+        # 不在这里 end_toggle：释放后到刷新数据落地之间有 1-5s 空窗，
+        # SSE 旧帧（port_update 约 1s 一条）携带旧 enabled 会把开关回跳
+        # 回操作前状态。改记入「待释放」遮蔽，由 _render_ports_view 在
+        # 刷新帧确认 enabled==目标态后统一释放；force 重拉保证确认帧
+        # 尽快到来（若恰有一单轮询在途，完成后立即补拉一单）。
+        self._pending_release[port] = (on, time.monotonic())
+        if self._in_flight:
+            self._refetch_after_poll = True
+        else:
+            self.refresh_data(force=True)
 
     def _on_port_toggle_failed(self, port: int, on: bool,
                                error: Exception) -> None:
@@ -1505,9 +1526,12 @@ class CuktechPanel(QWidget):
         card = self._port_grid._cards.get(port)
         if card is not None:
             card["switch"].setEnabled(True)
+        # 失败立即解除遮蔽并回弹开关视觉（按最近一帧已知状态整帧重
+        # 渲），等下一次轮询以真实值覆盖；本地 _status 为 None（服务不
+        # 可达）时用空帧渲染——空帧缺省 enabled=True 恰是设备关不动的
+        # 兜底观感，不额外分支
         self._port_grid.end_toggle(port)
-        # 失败回弹开关视觉状态（按最近一帧已知状态整帧重渲），等下一
-        # 次轮询以真实值覆盖
+        self._pending_release.pop(port, None)
         self._port_grid.update_state(self._status or {})
         Toast.info(self, f"切换 {_port_name(port)} 失败：{error}", 3000)
 
@@ -1754,9 +1778,16 @@ class CuktechPanel(QWidget):
 
     # ---------- 数据获取 ----------
 
-    def refresh_data(self, manual: bool = False) -> None:
-        """拉取状态 + 限额 + 当前档位曲线（合并为一次任务，串行队列只排一单）。"""
+    def refresh_data(self, manual: bool = False, force: bool = False) -> None:
+        """拉取状态 + 限额 + 当前档位曲线（合并为一次任务，串行队列只排一单）。
+
+        force=True：即使已有一单在途也置「完成后补拉」标记，当前这单
+        回调结束后立即再拉一单——写回调（端口开关等）需要尽快看到自己
+        的写入落地，不能等下一轮 5s 轮询。
+        """
         if self._in_flight:
+            if force:
+                self._refetch_after_poll = True
             return
         self._in_flight = True
         self._manual_refresh = manual
@@ -1794,6 +1825,11 @@ class CuktechPanel(QWidget):
         self._render_limits(limits)
         if chart is not None and requested == self._chart_range:
             self._curve.set_chart_data(chart)
+        # 写回调（refresh_data force）请求的补拉：这单回调是旧快照，
+        # 立即再拉一单取写入后的新状态（仍然只排一单，无并发风险）
+        if self._refetch_after_poll:
+            self._refetch_after_poll = False
+            self.refresh_data()
 
     def _on_data_error(self, error: Exception) -> None:
         self._in_flight = False
@@ -1806,6 +1842,11 @@ class CuktechPanel(QWidget):
         if self._manual_refresh:
             self._manual_refresh = False
             Toast.info(self, f"刷新失败：{error}", 3000)
+        # 写回调请求的补拉照常执行：上一单失败不代表写入失败，再拉一
+        # 单取真实状态（连续失败时等下一轮 5s 轮询兜底）
+        if self._refetch_after_poll:
+            self._refetch_after_poll = False
+            self.refresh_data()
 
     # ---------- SSE 推送注入（推送优先，轮询兜底） ----------
 
@@ -2035,10 +2076,32 @@ class CuktechPanel(QWidget):
             self._stage.set_scene(self._scene_row.current_scene())
 
     def _render_ports_view(self, status: dict) -> None:
-        """主视觉件整帧同步（纯展示组件，全部走组件自身渲染路径）。"""
+        """主视觉件整帧同步（纯展示组件，全部走组件自身渲染路径）。
+
+        渲染完成后统一处理端口开关「待释放」：整帧已把该口 enabled 与
+        目标态对账，一致的口此刻解除 pending 遮蔽——后续旧帧再也不会
+        携带旧 enabled（新快照已含写入结果），解除即安全。不一致（或
+        超时兜底）的口也强制释放：确认帧可能因设备未上报而迟到，遮蔽
+        不能永久卡死，释放后由后续真实帧落定。
+        """
         self._stage.update_state(status)
         self._port_grid.update_state(status)
         self._share_bar.update_state(status)
+        if not self._pending_release:
+            return
+        ports = status.get("ports") or {}
+        now = time.monotonic()
+        released: list[int] = []
+        for port, (on, submitted) in self._pending_release.items():
+            entry = ports.get(str(port))
+            enabled = None
+            if isinstance(entry, dict):
+                enabled = entry.get("enabled", True) is not False
+            if enabled is on or now - submitted >= _PENDING_RELEASE_TIMEOUT_S:
+                released.append(port)
+        for port in released:
+            self._pending_release.pop(port, None)
+            self._port_grid.end_toggle(port)
 
     def _update_total_watts(self) -> None:
         """头部总功率：Σ ports[*].power（与旧四行布局口径一致，不滤 enabled）。
@@ -2116,12 +2179,18 @@ class CuktechPanel(QWidget):
         """程序化同步开关状态（setChecked 会发 toggled，必须屏蔽信号）。
 
         SiSwitchRefactor 的自绘进度与 checked 状态是两套存储，同步补齐。
+        先停掉 progress_ani 再落值：SiExpAnimationRefactor.running 时每
+        个 updateCurrentTime tick 都按 _end_value 推进并覆盖 progress，
+        仅 setCurrentValue 会被下一个 tick 冲掉——失败回弹路径
+        （_on_bool_failed）正是动画刚向目标态起跑的窗口，不停动画回弹
+        无效（cuktech_stage._sync_switch 同款）。
         """
         switch.blockSignals(True)
         try:
             switch.setChecked(checked)
             switch.progress = 1.0 if checked else 0.0
             try:
+                switch.progress_ani.stop()
                 switch.progress_ani.setCurrentValue(1.0 if checked else 0.0)
             except Exception:
                 pass

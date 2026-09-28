@@ -154,7 +154,7 @@ class _TrayAudioBar(QFrame):
         self._jobs.submit(
             lambda d=did: self._fetch_state(d),
             on_success=lambda data, d=did: self._apply_state(data, d),
-            on_error=self._on_fetch_error,
+            on_error=lambda e, d=did: self._on_fetch_error(e, d),
         )
 
     def _fetch_state(self, did: str):
@@ -243,8 +243,11 @@ class _TrayAudioBar(QFrame):
         self._refresh_play_style()
         self._set_enabled(True)
 
-    def _on_fetch_error(self, err: Exception) -> None:
+    def _on_fetch_error(self, err: Exception, did: str | None = None) -> None:
         if not shiboken6.isValid(self):
+            return
+        # 飞行中已切到别的音箱：旧设备的失败不该动当前栏位
+        if did is not None and did != self._did:
             return
         self._vol_label.setText("—")
         self._set_enabled(self._did is not None)

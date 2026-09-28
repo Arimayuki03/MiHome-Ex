@@ -217,13 +217,18 @@ def _sync_switch(switch, checked: bool) -> None:
     """程序化同步开关状态（setChecked 会发 toggled，必须屏蔽信号）。
 
     SiSwitchRefactor 的自绘进度与 checked 状态是两套存储，同步补齐
-    （cuktech_panel._sync_switch 同款写法）。
+    （cuktech_panel._sync_switch 同款写法）。先停掉 progress_ani 再落
+    值：SiExpAnimationRefactor.running 时每个 updateCurrentTime tick 都
+    按 _end_value 推进并覆盖 progress，仅 setCurrentValue 会被下一个
+    tick 冲掉——回弹路径（_on_switch 的 pending 二次防御）正是动画刚
+    向目标态起跑的窗口，不停动画回弹无效。
     """
     switch.blockSignals(True)
     try:
         switch.setChecked(checked)
         switch.progress = 1.0 if checked else 0.0
         try:
+            switch.progress_ani.stop()
             switch.progress_ani.setCurrentValue(1.0 if checked else 0.0)
         except Exception:
             pass
@@ -737,9 +742,7 @@ class PortCardGrid(QWidget):
         # 轮询快照，可能仍携带旧 enabled，回跳会让用户以为操作失败再点
         # 一次造成反向切换。pending 期间图标也不随旧帧切换；解除后由
         # done 回调的重拉整帧落到真实值
-        if port in self._pending_toggles:
-            pass
-        else:
+        if port not in self._pending_toggles:
             if card["switch"].isChecked() != enabled:
                 _sync_switch(card["switch"], enabled)
             self._set_port_icon(card, port, enabled)

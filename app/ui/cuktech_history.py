@@ -811,15 +811,28 @@ class SessionHistoryWidget(QWidget):
 
         序号守卫：飞行中改筛选/翻页会立刻提交新请求（自增序号），
         旧响应迟到时序号不匹配被丢弃——新筛选立即生效，不会被吞。
+        任务执行侧同样比对序号：JobExecutor 串行队列不可取消，被
+        取代的陈旧任务轮到执行时直接放弃，不发网络请求（含防限流
+        延时），不堆积占道推迟其他面板任务（代码审查 2026-09-29 high）。
         """
         if self._service is None or self._jobs is None:
             return
         self._session_seq += 1
         seq = self._session_seq
+        # 提交时快照筛选参数：任务执行时不再活读 self._port/_period/_page，
+        # 排队期间筛选再变也不会发出参数与序号不一致的请求
+        port, period, page = self._port, self._period, self._page
+
+        def _fetch():
+            # 陈旧任务早退：返回 None 放弃本次请求，回调侧序号守卫
+            # 会把随后的 None 载荷一并丢弃
+            if seq != self._session_seq:
+                return None
+            return self._service.cuktech_sessions(
+                port=port, period=period, limit=_PAGE_LIMIT, page=page)
+
         self._jobs.submit(
-            lambda: self._service.cuktech_sessions(
-                port=self._port, period=self._period,
-                limit=_PAGE_LIMIT, page=self._page),
+            _fetch,
             on_success=lambda payload, s=seq: self._on_sessions(payload, s),
             on_error=lambda error, s=seq: self._on_error(error, s),
         )
@@ -1251,13 +1264,23 @@ class EnergySummaryWidget(QWidget):
 
         当前 Tab 在「每小时」时同时刷新每小时数据；其他 Tab 切入时
         才拉（懒加载纪律）。序号守卫：飞行中改周期立即重发新单。
+        任务执行侧同样比对序号：JobExecutor 串行队列不可取消，被
+        取代的陈旧任务轮到执行时直接放弃，不发网络请求（含防限流
+        延时），不堆积占道推迟其他面板任务（代码审查 2026-09-29 high）。
         """
         if self._service is None or self._jobs is None:
             return
         self._stats_seq += 1
         seq = self._stats_seq
+
+        def _fetch_stale_guarded():
+            # 陈旧任务早退：飞行中周期已再变（seq 已被新单超越），放弃
+            if seq != self._stats_seq:
+                return None
+            return self._fetch_all()
+
         self._jobs.submit(
-            self._fetch_all,
+            _fetch_stale_guarded,
             on_success=lambda data, s=seq: self._on_data(data, s),
             on_error=lambda error, s=seq: self._on_error(error, s),
         )
@@ -1275,6 +1298,10 @@ class EnergySummaryWidget(QWidget):
 
     def _load_hourly(self) -> None:
         """拉每小时数据：仅切到该 Tab 时调用；串行队列单请求。"""
+        # 布尔守卫（非漏改，与 session_seq/stats_seq/points_epoch 不同）：
+        # 本请求参数恒为 hours=24&interval=3600、与周期/会话/精度无关，
+        # 不存在「飞行中被新参数取代」的旧响应竞态；响应侧有 period 快照
+        # 比对兜底缓存标志。故布尔去重（同时只排一单）即足够。
         if self._service is None or self._jobs is None or self._hourly_in_flight:
             return
         self._hourly_in_flight = True
@@ -1636,10 +1663,22 @@ class SessionCurveWidget(QWidget):
         # 用户要等旧响应返回后才能重试（代码审查 2026-09-28 medium）
         self._points_epoch += 1
         epoch = self._points_epoch
+        # 提交时快照：任务执行时活读 self._session_id 会拿到飞行中又切
+        # 走的会话 id，发出「序号新、内容旧」的错位请求（串行队列排队
+        # 期间用户再点其他行时发生）；快照保证请求参数与 epoch 同源
+        session_id = self._session_id
         downsample = self._downsample
+
+        def _fetch_points():
+            # 陈旧任务早退：JobExecutor 串行队列不可取消，被取代的旧单
+            # 轮到执行时直接放弃，不发网络请求（含防限流延时），不堆积
+            # 占道推迟其他面板任务（代码审查 2026-09-29 high）
+            if epoch != self._points_epoch:
+                return None
+            return self._service.cuktech_session_points(session_id, downsample)
+
         self._jobs.submit(
-            lambda: self._service.cuktech_session_points(
-                self._session_id, downsample),
+            _fetch_points,
             on_success=lambda payload: self._on_points(payload, epoch),
             on_error=lambda error: self._on_error(error, epoch),
         )
@@ -1666,6 +1705,9 @@ class SessionCurveWidget(QWidget):
     def clear(self) -> None:
         """清空曲线与摘要回到空态。"""
         self._session_id = None
+        # 自增代际号：清空时若有点列任务在途，迟到响应的 epoch 与当前
+        # 不匹配被丢弃——否则可通过守卫把曲线渲回刚清空的控件
+        self._points_epoch += 1
         self._summary = None
         self._metrics = {}
         self._curve.set_series([], [])
@@ -1709,11 +1751,12 @@ class SessionCurveWidget(QWidget):
         else:
             self._summary_label.setText(f"{avg_v:.1f}V · {avg_a:.2f}A")
 
-    def _on_points(self, payload: dict | None, epoch: int | None = None) -> None:
+    def _on_points(self, payload: dict | None, epoch: int) -> None:
         if not shiboken6.isValid(self):
             return
-        # 过期响应丢弃：飞行中已切换会话/精度（epoch 已自增）
-        if epoch is not None and epoch != self._points_epoch:
+        # 过期响应丢弃：飞行中已切换会话/精度或已 clear（epoch 已自增）。
+        # epoch 必传：不带代际号的调用会绕过守卫直接渲染（无守卫后门）
+        if epoch != self._points_epoch:
             return
         points = (payload or {}).get("points") or []
         powers: list[float] = []
@@ -1800,11 +1843,12 @@ class SessionCurveWidget(QWidget):
             return
         Toast.info(self, f"CSV 导出失败：{error}", 4000)
 
-    def _on_error(self, error: Exception, epoch: int | None = None) -> None:
+    def _on_error(self, error: Exception, epoch: int) -> None:
         if not shiboken6.isValid(self):
             return
-        # 过期请求的错误不提示（用户已切换到别的内容）
-        if epoch is not None and epoch != self._points_epoch:
+        # 过期请求的错误不提示（用户已切换到别的内容）。epoch 必传：
+        # 不带代际号的调用会绕过守卫直接弹 Toast（无守卫后门）
+        if epoch != self._points_epoch:
             return
         Toast.info(self, f"会话曲线加载失败：{error}", 3000)
 
