@@ -6,7 +6,7 @@
 ; 再用 ISCC 编译本脚本得到 installer\Output\MiHome-Ex-setup-<版本>.exe
 
 #define MyAppName "MiHome-Ex"
-#define MyAppVersion ReadIni(SourcePath + "\version.ini", "version", "value", "0.3.1")
+#define MyAppVersion ReadIni(SourcePath + "\version.ini", "version", "value", "0.4.0")
 #define MyAppPublisher "MiHome-Ex contributors"
 #define MyAppExeName "MiHome-Ex.exe"
 

@@ -549,6 +549,37 @@ class MijiaService:
         """开关屏幕方向锁（锁定当前方向不随摆放旋转）。"""
         self._cuktech_call(self.cuktech.set_screen_lock, bool(enabled))
 
+    # ---------- M5 统一登录：云端凭据提取与下发 ----------
+
+    def cuktech_extract_credentials(self) -> dict[str, str]:
+        """从当前米家登录会话提取充电器云端凭据（did/mac/token/ble_key）。
+
+        复用 mijiaAPI auth.json 的会话三要素直调小米云，无需在 BLE
+        服务端里二次扫码（ADR-009）。纯同步方法，由调用方经 jobs 串行
+        队列提交；任何失败抛中文 ServiceError，**异常与日志不含凭据
+        内容**。成功后凭据只在内存中短暂存在，交由
+        :meth:`cuktech_save_credentials` 下发，不落盘、不进缓存。
+        """
+        try:
+            from .cuktech_credentials import CredentialError, extract_credentials
+
+            return extract_credentials(
+                auth_data=dict(getattr(self._api, "auth_data", {}) or {}))
+        except CredentialError as exc:
+            raise ServiceError(str(exc)) from exc
+        except Exception as exc:
+            raise _wrap_error(exc, "提取充电器凭据失败") from exc
+
+    def cuktech_save_credentials(self, mac: str, token: str,
+                                 ble_key: str) -> None:
+        """把凭据写入 BLE 服务端配置（/api/config），服务端随后自重启。
+
+        成功返回即代表配置已落盘；服务端约 1 秒后重启，期间 SSE 断开
+        与状态轮询失败属预期，界面按既有离线/重连语义呈现即可。
+        """
+        self._cuktech_call(self.cuktech.save_ble_credentials, mac, token,
+                           ble_key)
+
     # ---------- 开关状态（卡片快速控制用） ----------
 
     def power_state(self, did: str) -> bool | None:

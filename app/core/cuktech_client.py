@@ -532,3 +532,28 @@ class CuktechClient:
         手工构造位模式极易踩错位，优先用上面两个结构化方法。
         """
         self._request("POST", "/api/protocol", body={"value": int(value)})
+
+    # ---------- 服务端配置（M5 统一登录） ----------
+
+    def get_config(self) -> dict[str, Any]:
+        """GET /api/config：读取服务端当前配置。
+
+        敏感字段（token/ble_key/password/uid）服务端返回掩码（含
+        "****"），调用方不能把掩码值回写（save 端会按占位符跳过）。
+        """
+        return self._request("GET", "/api/config")
+
+    def save_ble_credentials(self, mac: str, token: str, ble_key: str) -> None:
+        """POST /api/config：写入 BLE 凭据并触发服务端重启。
+
+        只提交 ble 段（mac/token/ble_key），其余段不触碰——服务端
+        按 section 合并，未提及的字段保持原值。保存成功后服务端约
+        1 秒后自动重启，期间连接会中断（UI 需按服务重启语义提示）。
+        mac/token/ble_key 任一为空直接本地拒绝，不发请求。
+        """
+        ble = {"mac": str(mac or "").strip(),
+               "token": str(token or "").strip(),
+               "ble_key": str(ble_key or "").strip()}
+        if not all(ble.values()):
+            raise ServiceError("BLE 凭据不完整（mac/token/ble_key 均必填）")
+        self._request("POST", "/api/config", body={"config": {"ble": ble}})

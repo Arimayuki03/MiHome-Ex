@@ -8,7 +8,7 @@
 替换带来的生硬变化。
 """
 
-from PySide6.QtCore import QEvent, QPropertyAnimation, Qt, Signal
+from PySide6.QtCore import QEvent, QPropertyAnimation, QSize, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -32,6 +33,8 @@ from app.ui.si_theme import (
     themed_switch,
     themed_tab_button,
 )
+
+import qtawesome as qta
 
 # 下拉文案 -> 设置值
 _THEME_MODE_LABELS = {"system": "跟随系统", "light": "浅色模式", "dark": "深色模式"}
@@ -78,9 +81,14 @@ class SettingsDialog(OverlayDialog):
     # 保存时若内置充电器服务开关有变化即发出；主窗口即时启停服务端
     ble_server_setting_changed = Signal(bool)
 
-    def __init__(self, parent=None, devices=None):
+    def __init__(self, parent=None, devices=None, service=None, jobs=None):
         super().__init__(parent)
         self._devices = devices or []
+        # M5 充电器一键登录需要 service 门面与 jobs 队列：凭据提取是
+        # 两段网络请求（小米云 + 本地服务端），必须后台线程执行；
+        # 缺省 None 时按钮点击直接提示不可用（如测试环境无 service）
+        self._service = service
+        self._jobs = jobs
         self.setWindowTitle("设置")
         # 尺寸由 showEvent 按主窗口显隐决定：可见时覆盖主窗口，隐藏时铺满屏幕
         self._header_drag_pos = None
@@ -315,6 +323,20 @@ class SettingsDialog(OverlayDialog):
         _sync_switch(self._ble_toggle)
         ble_row.addWidget(self._ble_toggle)
 
+        # ── 充电器一键登录（M5：复用米家会话提取凭据写入服务端） ──
+        self._cred_item, self._cred_label, self._cred_desc, cred_row = self._make_item(
+            "充电器一键登录",
+            "用当前米家登录会话自动获取充电器蓝牙凭据并写入内置服务，"
+            "免去在服务端二次扫码（需米家已登录且充电器已绑定米家）")
+        self._cred_btn = QPushButton(" 一键配置")
+        self._cred_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cred_btn.setIcon(qta.icon("mdi.key-plus", color=SiColors.TEXT_PRIMARY))
+        self._cred_btn.setIconSize(QSize(16, 16))
+        self._cred_btn.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self._cred_btn.clicked.connect(self._on_cred_clicked)
+        self._cred_running = False
+        cred_row.addWidget(self._cred_btn)
+
         # ── 带快捷操作面板的系统托盘 ──
         self._tray_item, self._tray_label, self._tray_desc, tray_row = self._make_item(
             "带快捷操作面板的系统托盘",
@@ -355,7 +377,7 @@ class SettingsDialog(OverlayDialog):
         update_row.addWidget(self._update_toggle)
 
         return self._build_scroll([
-            self._ble_item, self._autostart_item, self._speaker_item,
+            self._ble_item, self._cred_item, self._autostart_item, self._speaker_item,
             self._tray_item, self._start_min_item, self._hide_item,
             self._update_item,
         ])
@@ -410,7 +432,7 @@ class SettingsDialog(OverlayDialog):
     def _apply_styles(self) -> None:
         """主题相关内联样式：构造与 retheme 共用。"""
         panel_card = f"QFrame {{ background: {SiColors.CARD}; border-radius: 10px; }}"
-        for item in (self._ble_item, self._tray_item, self._start_min_item, self._fab_item,
+        for item in (self._ble_item, self._cred_item, self._tray_item, self._start_min_item, self._fab_item,
                      self._theme_item, self._autostart_item, self._speaker_item,
                      self._hide_item, self._scale_item, self._update_item):
             item.setStyleSheet(panel_card)
@@ -629,6 +651,55 @@ class SettingsDialog(OverlayDialog):
             eff = QGraphicsOpacityEffect(self._start_min_toggle)
             eff.setOpacity(0.35)
             self._start_min_toggle.setGraphicsEffect(eff)
+
+    # ---------- M5 充电器一键登录 ----------
+
+    def _on_cred_clicked(self) -> None:
+        """一键配置：提取米家会话的充电器凭据 → 写入内置服务端。
+
+        两段网络（小米云 + 本地服务）都经 jobs 后台执行，回调回主线程
+        更新按钮态；在途重复点击忽略。全程不落任何凭据日志。
+        """
+        if self._cred_running:
+            return
+        if self._service is None or self._jobs is None:
+            from app.ui.toast import Toast
+            Toast.info(self, "当前环境不可用（缺少服务引用）", 3000)
+            return
+        self._cred_running = True
+        self._cred_btn.setEnabled(False)
+        self._cred_btn.setText(" 配置中…")
+
+        def _restore(text: str) -> None:
+            self._cred_running = False
+            self._cred_btn.setEnabled(True)
+            self._cred_btn.setText(" 一键配置")
+
+        def _on_extract(creds: dict) -> None:
+            # 提取成功：立刻下发到本地服务端（仍在后台线程链上）
+            self._jobs.submit(
+                lambda: self._service.cuktech_save_credentials(
+                    creds["mac"], creds["token"], creds["ble_key"]),
+                on_success=lambda _: self._on_cred_done(_restore),
+                on_error=lambda exc: self._on_cred_failed(exc, _restore),
+            )
+
+        self._jobs.submit(
+            self._service.cuktech_extract_credentials,
+            on_success=_on_extract,
+            on_error=lambda exc: self._on_cred_failed(exc, _restore),
+        )
+
+    def _on_cred_done(self, restore) -> None:
+        restore(" 一键配置")
+        from app.ui.toast import Toast
+        Toast.info(self, "充电器凭据已写入，服务正在重启…", 4000)
+
+    def _on_cred_failed(self, exc: Exception, restore) -> None:
+        restore(" 一键配置")
+        from app.ui.toast import Toast
+        # service.ServiceError 的 message 即用户可读中文且不含凭据
+        Toast.info(self, f"一键配置失败：{exc}", 5000)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)

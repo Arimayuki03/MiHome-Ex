@@ -776,7 +776,8 @@ class MainWindow(QMainWindow):
             dlg.raise_()
             dlg.activateWindow()
             return
-        dlg = SettingsDialog(self, devices=self._all_devices)
+        dlg = SettingsDialog(self, devices=self._all_devices,
+                             service=self._service, jobs=self._jobs)
         self._settings_dialog = dlg
         # 内置充电器服务开关即时启停（保存时发信号；dlg.exec 阻塞期间
         # 信号排队，accept 返回事件循环后才派发，此处先接好）
