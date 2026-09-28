@@ -17,6 +17,7 @@ cuktech_client 一个模块，界面层永远只面对本类。
 
 import json
 import logging
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -85,6 +86,10 @@ class MijiaService:
         # model -> 图标 URL 或 None（拉取失败，会话内不再重试）；
         # 启动即从磁盘加载，此后只增不删（见 icon_store）
         self._icon_cache: dict[str, str | None] = icon_store.load_urls()
+        # 本地 CUKTECH 充电器最近一次成功组装的条目（None=从未成功）。
+        # 聚合时网关瞬时不可达（BLE 重连窗口/服务刚启动）会用它兜底，
+        # 避免一次探测失败就让卡片从界面与缓存里消失且不再自动恢复
+        self._last_cuktech_device: DeviceInfo | None = None
 
     def _init_api(self) -> mijiaAPI:
         """构造上游客户端；认证文件损坏时隔离坏文件并降级为未登录。
@@ -158,7 +163,11 @@ class MijiaService:
         追加一台 ``source="local"`` 的设备，did 是固定合成的
         ``cuktech-local``（非米家云端 did，仅作界面主键）。网关不可达
         时静默跳过本地设备不抛错——设备列表加载失败是模态错误，而
-        本地充电器缺席只是列表里少一张卡片。
+        本地充电器缺席只是列表里少一张卡片。但单次探测成功过之后，
+        后续刷新遇瞬时不可达（BLE 重连/服务重启窗口）沿用上一条
+        成功的条目兜底：面板 SSE 活跃证明设备活着，卡片不应因一次
+        探测时序抖动从界面消失；条目数据（功率等）由卡片自轮询刷新，
+        这里只提供存在性。
         """
         try:
             homes = self._api.get_homes_list()
@@ -188,6 +197,13 @@ class MijiaService:
         result.sort(key=lambda x: (x.home_name, x.room_name, x.name))
 
         local = self._cuktech_device()
+        if local is not None:
+            self._last_cuktech_device = local
+        elif self._last_cuktech_device is not None:
+            # 瞬时不可达兜底：沿用上次成功的条目。设备真实在线与否由
+            # 卡片/面板的 SSE 与自轮询呈现（离线时读数灰置），列表里
+            # 保留存在性即可，否则一次抖动就把卡片从网格与缓存里抹掉
+            local = self._last_cuktech_device
         if local is not None:
             result.append(local)
         return result
@@ -715,8 +731,7 @@ class MijiaService:
 
         与 power_states 共用设备索引、内存 spec 缓存与上游文件缓存，
         轮询同时刷开关和读数时不会产生额外请求。同型号多台设备只拉
-        一次：上游把 spec 缓存在按型号命名的同一个文件里，并发拉取
-        同型号会互相覆盖写坏缓存。
+        一次（下方按型号去重），避免并发写坏上游文件缓存。
         """
         if any(d not in self._device_index for d in dids):
             self._refresh_device_index()
@@ -731,6 +746,10 @@ class MijiaService:
                 result[did] = self._spec_cache[model]
             else:
                 to_fetch.append(model)
+        # 同型号必须只拉一次：上游把 spec 缓存在按型号命名的同一个文件里，
+        # 并发拉取同型号会互相覆盖写坏缓存（非原子 open("w")+json.dump）。
+        # dict.fromkeys 保序去重，两台同型号设备只进一个任务。
+        to_fetch = list(dict.fromkeys(to_fetch))
 
         if to_fetch:
             cache_dir = self._api.auth_data_path.parent
@@ -806,7 +825,12 @@ class MijiaService:
         return ret.headers.get("Location")
 
     def icon_file(self, model: str, url: str) -> Path | None:
-        """下载图标到本地缓存并返回文件路径；已存在直接返回，失败返回 None。"""
+        """下载图标到本地缓存并返回文件路径；已存在直接返回，失败返回 None。
+
+        落盘走 tmp + os.replace 原子替换：直接 write_bytes 的话，下载中途
+        进程退出会留下截断 PNG，而 exists() 短路会让这个坏文件永久卡住
+        缓存（永不重下、QPixmap 加载失败）。
+        """
         path = icon_store.icon_path(model)
         if path.exists():
             return path
@@ -818,7 +842,9 @@ class MijiaService:
                 logger.warning("下载设备图标失败 %s: HTTP %s", model, r.status_code)
                 return None
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(r.content)
+            tmp = path.with_name(path.name + f".tmp{os.getpid()}")
+            tmp.write_bytes(r.content)
+            os.replace(tmp, path)
             return path
         except Exception as exc:
             logger.warning("下载设备图标失败 %s: %s", model, exc)

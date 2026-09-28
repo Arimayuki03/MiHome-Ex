@@ -133,8 +133,21 @@ def _asset(name: str) -> str:
 
 
 def _asset_pixmap(name: str) -> QPixmap:
-    """加载素材原始位图（未标注 devicePixelRatio，调用方按需标注）。"""
-    return QPixmap(_asset(name))
+    """加载素材原始位图（未标注 devicePixelRatio，调用方按需标注）。
+
+    模块级缓存：充电中浮动动画（3s 循环）经 write() 每帧触发 paintEvent，
+    每帧最多 6 次 QPixmap(path) 磁盘解码（底图/徽标/逐口条图）——Qt 不
+    缓存文件构造的 QPixmap。素材只有固定十几个变体，按 (name, dpr 档)
+    缓存后 paint 路径零磁盘 IO。
+    """
+    cached = _PIXMAP_CACHE.get(name)
+    if cached is None:
+        cached = QPixmap(_asset(name))
+        _PIXMAP_CACHE[name] = cached
+    return cached
+
+
+_PIXMAP_CACHE: dict[str, QPixmap] = {}
 
 
 def _hi_dpi_pixmap(name: str, dpr: float) -> QPixmap:
@@ -142,11 +155,18 @@ def _hi_dpi_pixmap(name: str, dpr: float) -> QPixmap:
 
     setDevicePixelRatio(3×dpr) 后，drawPixmap 的目标矩形用逻辑 px，
     Qt 自动取用整倍物理像素（offscreen/1x 屏取 3x=整图，2x 屏取 1.5x）。
+    dpr 键按 0.5 档取整——同一素材缓存少量 dpr 变体即可，不逐帧重解码。
     """
-    pm = _asset_pixmap(name)
-    if not pm.isNull():
-        pm.setDevicePixelRatio(_SRC_SCALE * dpr)
-    return pm
+    dpr_key = round(dpr * 2.0) / 2.0
+    key = f"{name}@{dpr_key}"
+    cached = _PIXMAP_CACHE.get(key)
+    if cached is None:
+        pm = _asset_pixmap(name)
+        if not pm.isNull():
+            pm.setDevicePixelRatio(_SRC_SCALE * dpr_key)
+        cached = pm
+        _PIXMAP_CACHE[key] = cached
+    return cached
 
 
 # 端口号 -> 展示名（与 cuktech_panel._PORT_LABELS 同源文案）
@@ -723,11 +743,17 @@ class PortCardGrid(QWidget):
         素材是白色线稿（on）/深灰实底（off）：暗色主题直接用；浅色主题
         on 版反相成深色线稿（上游 html[data-appearance=light] invert 同款）。
         """
-        pm = _asset_pixmap(
-            f"main_card_port_{_PORT_KEYS[port]}_{'on' if enabled else 'off'}.png")
-        if not pm.isNull():
-            pm = pm.copy()  # 避免缓存影响（QPixmap 按文件名共享需重开）
-            pm.setDevicePixelRatio(pm.width() / 26.0)  # 78px 源 → 26 逻辑 px
+        name = f"main_card_port_{_PORT_KEYS[port]}_{'on' if enabled else 'off'}.png"
+        key = f"{name}#26"
+        pm = _PIXMAP_CACHE.get(key)
+        if pm is None:
+            pm = _asset_pixmap(name)
+            if not pm.isNull():
+                # 预缩放到 26 逻辑 px（78px 源 → dpr=3），SSE port_update
+                # 每口每秒一次，磁盘解码+整图 copy 纯浪费
+                pm = pm.copy()
+                pm.setDevicePixelRatio(pm.width() / 26.0)
+            _PIXMAP_CACHE[key] = pm
         card["icon"].setPixmap(pm)
 
     # ---------- 内联样式（retheme 重求值） ----------

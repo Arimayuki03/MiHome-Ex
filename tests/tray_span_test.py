@@ -27,7 +27,7 @@ from PySide6.QtCore import QPointF, QEvent, Qt as QtMod
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
-app = QApplication([])
+app = QApplication.instance() or QApplication([])
 
 from app.core import tray_store
 from app.ui.cuktech_visuals import MultiMetricCurve

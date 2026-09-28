@@ -256,17 +256,20 @@ def main() -> int:
                      [("我的家", "客厅", "卧室音箱"), ("我的家", "客厅", "客厅灯")])
 
         # ---------- list_devices 聚合：蓝牙断开（HTTP 通但 connected=false） ----------
-        # 门面聚合开关是 cuktech.connected()（服务可达 且 蓝牙在线），
-        # 蓝牙断开按「本地设备不可用」处理，静默跳过
+        # 门面聚合开关是 cuktech.connected()（服务可达 且 蓝牙在线）。
+        # 本实例已成功组装过一次本地设备，瞬时断开沿用上次条目兜底
+        # （卡片不应因一次探测抖动消失；在线与否由卡片自轮询呈现）
         _FAKE_ROUTES[("GET", "/api/status")] = (
             200, {**_STATUS_OK, "connected": False})
         devices = service.list_devices()
-        expect_equal("蓝牙断开（connected=false）时跳过本地设备", len(devices), 2)
-        assert all(d.source == "cloud" for d in devices)
-        check("蓝牙断开时全部为 cloud 来源")
+        expect_equal("蓝牙断开（connected=false）时沿用上次本地条目", len(devices), 3)
+        local_after = [d for d in devices if d.source == "local"]
+        expect_equal("兜底条目仍是 cuktech-local", len(local_after), 1)
+        check("蓝牙断开时兜底保留本地条目")
         _FAKE_ROUTES[("GET", "/api/status")] = (200, _STATUS_OK)
 
-        # ---------- list_devices 聚合：网关不可达 ----------
+        # ---------- list_devices 聚合：网关不可达（全新实例，从未成功过） ----------
+        # 从未成功组装过本地设备的实例不兜底：只有云端设备
         offline = _FacadeService(
             cuktech=CuktechClient(base_url="http://127.0.0.1:1", timeout=0.3))
         devices = offline.list_devices()
@@ -275,10 +278,13 @@ def main() -> int:
         check("网关不可达时全部为 cloud 来源")
 
         # ---------- list_devices 聚合：device_model 为空视为无效 ----------
+        # 组装失败（model 空）不更新 _last_cuktech_device，但本次调用
+        # HTTP 是通的（connected=true 只是 model 无效）→ 组装返回 None，
+        # 兜底沿用上次成功条目，仍是 3 台
         _FAKE_ROUTES[("GET", "/api/status")] = (
             200, {**_STATUS_OK, "device_model": ""})
         devices = service.list_devices()
-        expect_equal("device_model 为空时跳过本地设备", len(devices), 2)
+        expect_equal("device_model 为空时沿用上次本地条目", len(devices), 3)
         _FAKE_ROUTES[("GET", "/api/status")] = (200, _STATUS_OK)
 
         # ---------- cuktech_* 转发 ----------

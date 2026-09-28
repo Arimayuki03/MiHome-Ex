@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app import resource_path
 from app.ui.si_theme import SiColors, current_theme
 
 # ----------------------------------------------------------------------------
@@ -98,12 +99,17 @@ _CURVE_MAX_POINTS = 288  # 上游 MAX_POINTS_MAP 的最大档位
 
 
 def _scene_icon_path(mode: int, active: bool) -> str:
-    """场景图标路径：main_charger_{theme}_{img}_{on|off}.png。"""
+    """场景图标绝对路径：main_charger_{theme}_{img}_{on|off}.png。
+
+    必须经 resource_path 解析：相对路径按进程 CWD 解析，安装版从
+    快捷方式/注册表启动时 CWD 不一定是安装目录，会整批加载失败
+    （模式图标空白圆圈）；cuktech_stage._asset 同款约定。
+    """
     meta = next((m for m in _SCENE_META if m[0] == mode), _SCENE_META[0])
-    return (
+    return str(resource_path(
         f"{_SCENE_IMG_DIR}/main_charger_{current_theme()}_{meta[1]}_"
         f"{'on' if active else 'off'}.png"
-    )
+    ))
 
 
 def _centered_icon_pixmap(path: str) -> QPixmap:

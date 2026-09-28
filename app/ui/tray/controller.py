@@ -283,12 +283,18 @@ class TrayController:
                     self._hide_hover_popup()
 
     def _show_hover_popup(self) -> None:
-        """在托盘图标下方弹出数据弹窗并开始状态拉取。"""
+        """在托盘图标下方弹出数据弹窗并开始状态拉取。
+
+        位置必须按图标所在屏的 availableGeometry 钳制：托盘图标总在屏幕
+        右缘/底缘（底部任务栏时图标底边距屏底仅约 10-15px，弹窗高
+        130-160px），直接 geo.bottom()+4 起算几乎整体落到屏外；底部放
+        不下时翻转到图标上方。
+        """
         geo = self._tray.geometry()
         popup = self._hover_popup
         popup.adjustSize()
+        from PySide6.QtGui import QGuiApplication
         if geo.isNull():
-            from PySide6.QtGui import QGuiApplication
             screen = QGuiApplication.primaryScreen()
             if screen is None:
                 return
@@ -297,8 +303,16 @@ class TrayController:
             y = avail.bottom() - popup.height() - 48
             pos = QPoint(max(avail.left(), x), max(avail.top(), y))
         else:
-            pos = QPoint(
-                geo.center().x() - popup.width() // 2, geo.bottom() + 4)
+            screen = QGuiApplication.screenAt(geo.center())
+            avail = (screen or QGuiApplication.primaryScreen()).availableGeometry()
+            x = geo.center().x() - popup.width() // 2
+            y = geo.bottom() + 4
+            # 水平钳到屏幕内；垂直放不下翻转到图标上方，再钳一次
+            if y + popup.height() > avail.bottom():
+                y = geo.top() - popup.height() - 4
+            x = max(avail.left(), min(x, avail.right() - popup.width()))
+            y = max(avail.top(), min(y, avail.bottom() - popup.height()))
+            pos = QPoint(x, y)
         popup.move(pos)
         popup.show()
         self._popup_poll_timer.start()

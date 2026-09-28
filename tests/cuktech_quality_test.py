@@ -30,7 +30,7 @@ sys.path.insert(0, ".")
 
 from PySide6.QtWidgets import QApplication
 
-app = QApplication([])
+app = QApplication.instance() or QApplication([])
 
 from app.ui import si_theme
 from app.ui.si_theme import SiColors

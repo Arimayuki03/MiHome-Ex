@@ -67,50 +67,58 @@ def main() -> int:
     apply_theme(get_theme_mode())
 
     # 单实例：仅允许一个进程，二次启动唤起已有窗口。
-    # 自重启（MIHOME_RESTARTED=1）时跳过：旧进程即将退出，
-    # 此时锁/server 尚在，走正常单实例会被当成「唤起旧窗口」。
+    # 自重启（MIHOME_RESTARTED=1）的新进程同样要取锁并监听——否则重启后的
+    # 实例不持锁，用户再双击 exe 会因 tryLock 成功而再起一个完整实例
+    # （双份轮询、settings.json 读-改-写互相覆盖）。区别仅在「取锁失败」
+    # 分支：重启进程不把旧实例唤起到前台（旧进程此刻正在退出，且重启
+    # 的意义就是换新进程，唤起旧窗口反而错误）。
+    _restarting = os.environ.get("MIHOME_RESTARTED") == "1"
     server = None
-    if os.environ.get("MIHOME_RESTARTED") != "1":
-        lock_path = os.path.join(tempfile.gettempdir(), _LOCK_NAME)
-        lock = QLockFile(lock_path)
-        # 默认 30s 视为过期，若上次崩溃残留可自动接管
-        if not lock.tryLock(0):
-            # 尝试唤起已有实例
-            sock = QLocalSocket()
-            sock.connectToServer(_SERVER_NAME)
-            if sock.waitForConnected(400):
-                try:
-                    sock.write(b"show")
-                    sock.waitForBytesWritten(300)
-                except Exception:
-                    pass
-                try:
-                    sock.disconnectFromServer()
-                except Exception:
-                    pass
-                return 0
-            # 连接失败视为残留锁/服务，强制清理后重试一次
+    lock_path = os.path.join(tempfile.gettempdir(), _LOCK_NAME)
+    lock = QLockFile(lock_path)
+    # 默认 30s 视为过期，若上次崩溃残留可自动接管
+    if not lock.tryLock(0):
+        if _restarting:
+            # 旧进程尚未退出（锁仍被持有）：不唤起旧窗口，也不强夺锁——
+            # 等待期短暂退避后由用户再试；该窗口期只在重启瞬间出现
+            return 0
+        # 尝试唤起已有实例
+        sock = QLocalSocket()
+        sock.connectToServer(_SERVER_NAME)
+        if sock.waitForConnected(400):
             try:
-                QLocalServer.removeServer(_SERVER_NAME)
+                sock.write(b"show")
+                sock.waitForBytesWritten(300)
             except Exception:
                 pass
             try:
-                lock.unlock()
+                sock.disconnectFromServer()
             except Exception:
                 pass
-            if not lock.tryLock(0):
-                return 0
-        # 首实例：持有锁并监听唤起请求
-        QLocalServer.removeServer(_SERVER_NAME)
-        server = QLocalServer()
-        # 监听失败不影响主流程，仅失去二次唤起能力
+            return 0
+        # 连接失败视为残留锁/服务，强制清理后重试一次
         try:
-            server.listen(_SERVER_NAME)
+            QLocalServer.removeServer(_SERVER_NAME)
         except Exception:
             pass
-        # 防止被 GC 回收
-        app._single_instance_lock = lock  # type: ignore[attr-defined]
-        app._single_instance_server = server  # type: ignore[attr-defined]
+        try:
+            lock.unlock()
+        except Exception:
+            pass
+        if not lock.tryLock(0):
+            return 0
+    # 首实例/重启实例：持有锁并监听唤起请求
+    if not _restarting:
+        QLocalServer.removeServer(_SERVER_NAME)
+    server = QLocalServer()
+    # 监听失败不影响主流程，仅失去二次唤起能力
+    try:
+        server.listen(_SERVER_NAME)
+    except Exception:
+        pass
+    # 防止被 GC 回收
+    app._single_instance_lock = lock  # type: ignore[attr-defined]
+    app._single_instance_server = server  # type: ignore[attr-defined]
 
     # 字体抗锯齿：优先抗锯齿而非网格对齐，明显减少小字号锯齿
     font = QFont("Microsoft YaHei UI", 9)

@@ -80,7 +80,14 @@ class ServiceError(Exception):
 
     与 app/core/service.py 的同名异常语义一致；门面层捕获本异常后
     原样透传（或统一转成 service 层的 ServiceError）。
+    ``status_code`` 是 HTTP 状态码（非 HTTP 错误时为 None）——调用方
+    按 status_code 判定 404 等情形，不要匹配 message 文案子串（文案
+    措辞可随时调整，结构化字段才是稳定契约）。
     """
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class CuktechClient:
@@ -95,20 +102,36 @@ class CuktechClient:
     """
 
     def __init__(self, base_url: str = "http://127.0.0.1:8199",
-                 timeout: float = 4.0) -> None:
+                 timeout: float = 4.0,
+                 command_timeout: float = 12.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        # BLE 命令超时：服务端 command_timeout=10s（config.py），命令在
+        # 10s 后才返回 200+ok:false("command timeout")。客户端若沿用 4s
+        # 读超时，慢命令会被本地先行判死而服务端仍执行成功——UI 报失败、
+        # 设备实际已生效。放宽到 12s 覆盖服务端上限。
+        self._command_timeout = command_timeout
+
+    @property
+    def base_url(self) -> str:
+        """服务基地址（SSE 通道与 HTTP 客户端同址的公开取值）。"""
+        return self._base_url
 
     # ---------- HTTP 基础层 ----------
 
     def _request(self, method: str, path: str, *,
                  body: dict[str, Any] | None = None,
-                 query: dict[str, Any] | None = None) -> dict[str, Any]:
+                 query: dict[str, Any] | None = None,
+                 timeout: float | None = None) -> dict[str, Any]:
         """发送一次 JSON 请求并解析 JSON 响应，返回原始 dict。
 
         HTTP 非 2xx 或 body 的 ok=false 统一转中文 ServiceError。
         query 值做 str() 转换与 URL 编码；body 序列化为 UTF-8 JSON。
+        timeout 缺省按请求类别选择：POST（BLE 命令）用 command_timeout，
+        其余只读查询用 timeout。
         """
+        if timeout is None:
+            timeout = self._command_timeout if method == "POST" else self._timeout
         url = self._base_url + path
         if query:
             url += "?" + urllib.parse.urlencode(
@@ -122,7 +145,7 @@ class CuktechClient:
         try:
             req = urllib.request.Request(url, data=data, headers=headers,
                                          method=method)
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read()
             payload = json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
@@ -173,16 +196,22 @@ class CuktechClient:
         return payload
 
     def _http_error(self, code: int, detail: str) -> ServiceError:
-        """把 HTTP 状态码 + 服务端 error 文本组装为中文 ServiceError。"""
+        """把 HTTP 状态码 + 服务端 error 文本组装为中文 ServiceError。
+
+        status_code 一并写入异常（结构化字段），调用方按 exc.status_code
+        判定，禁止匹配 message 子串。
+        """
         if code == 400:
-            return ServiceError(f"充电器拒绝命令：{detail}")
+            return ServiceError(f"充电器拒绝命令：{detail}", status_code=code)
         if code == 404:
-            return ServiceError("充电器服务接口不存在（服务版本不匹配？）")
+            return ServiceError("充电器服务接口不存在（服务版本不匹配？）",
+                                status_code=code)
         if code == 413:
-            return ServiceError("充电器命令过大被服务端拒绝")
+            return ServiceError("充电器命令过大被服务端拒绝", status_code=code)
         if code == 504:
-            return ServiceError("充电器命令超时：设备可能离线")
-        return ServiceError(f"充电器服务错误（HTTP {code}）：{detail}")
+            return ServiceError("充电器命令超时：设备可能离线", status_code=code)
+        return ServiceError(f"充电器服务错误（HTTP {code}）：{detail}",
+                            status_code=code)
 
     # ---------- 状态与健康 ----------
 
@@ -397,7 +426,8 @@ class CuktechClient:
                 "GET", f"/api/sessions/{int(session_id)}/points",
                 query={"downsample": downsample} if downsample > 0 else None)
         except ServiceError as exc:
-            if "404" in str(exc) or "不存在" in str(exc):
+            # 按结构化状态码判定（勿匹配文案子串——文案措辞随时可调）
+            if exc.status_code == 404:
                 return None
             raise
 

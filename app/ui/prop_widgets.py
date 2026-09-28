@@ -14,7 +14,7 @@
 
 from typing import Any, Callable
 
-from PySide6.QtCore import QRect, QSize, Qt
+from PySide6.QtCore import QEvent, QRect, QSize, Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -525,7 +525,13 @@ class TextRowSection(QFrame):
             else:
                 editor.setRange(-2147483648, 2147483647)
             editor.setFixedHeight(32)
-            editor.editingFinished.connect(lambda: write(editor.value()))
+            # editingFinished 失焦也会发射（不论值是否改动）：聚焦时记录
+            # 初值，失焦时值未变化则跳过 write——否则点进输入框再点别处
+            # 就向设备发一条冗余写指令并进入 3s cooldown 压制真实回读
+            # （字符串分支弃用 editingFinished 的注释是同一问题）
+            editor.installEventFilter(self)
+            editor.editingFinished.connect(
+                lambda e=editor, w=write: w(e.value()) if e.value() != self._focus_snapshot.get(id(e), e.value()) else None)
             # 批量回读里读不到的属性为 None，直接跳过避免 int(None) 抛异常
             display = lambda v: v is not None and editor.setValue(int(v))  # noqa: E731
             input_row.addWidget(editor, 1)
@@ -534,7 +540,9 @@ class TextRowSection(QFrame):
             editor.setDecimals(2)
             editor.setRange(-1e9, 1e9)
             editor.setFixedHeight(32)
-            editor.editingFinished.connect(lambda: write(editor.value()))
+            editor.installEventFilter(self)
+            editor.editingFinished.connect(
+                lambda e=editor, w=write: w(e.value()) if e.value() != self._focus_snapshot.get(id(e), e.value()) else None)
             display = lambda v: v is not None and editor.setValue(float(v))  # noqa: E731
             input_row.addWidget(editor, 1)
         else:
@@ -573,6 +581,17 @@ class TextRowSection(QFrame):
         lay.addLayout(input_row)
         # 使用最小高度而非固定高度，避免在组合卡片中被裁切
         self.setMinimumHeight(64)
+
+    # 数字框聚焦初值快照（FocusIn 记录、editingFinished 比对后清除），
+    # 失焦值未变时不向设备发冗余写指令
+    _focus_snapshot: dict[int, Any] = {}
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt 命名约定)
+        if event.type() == QEvent.Type.FocusIn and isinstance(obj, (QSpinBox, QDoubleSpinBox)):
+            self._focus_snapshot[id(obj)] = obj.value()
+        elif event.type() == QEvent.Type.FocusOut:
+            self._focus_snapshot.pop(id(obj), None)
+        return super().eventFilter(obj, event)
 
     def refresh_value(self, value: Any) -> None:
         self._editor.blockSignals(True)

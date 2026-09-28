@@ -16,7 +16,7 @@ sys.path.insert(0, ".")
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QDialog
 
-app = QApplication([])
+app = QApplication.instance() or QApplication([])
 
 # 测试禁写运行数据：假设备会经指标回写等路径泄漏进
 # devices_cache.json（曾污染真实运行数据），测试期一律禁写

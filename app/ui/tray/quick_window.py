@@ -408,10 +408,15 @@ class TrayQuickWindow(QDialog):
         )
 
     def _on_voice_success(self, text: str, fallback_note: str = "") -> None:
+        # 语音任务耗时数秒，期间窗口可能已被 retheme deleteLater
+        if not shiboken6.isValid(self):
+            return
         from app.ui.toast import Toast
         Toast.info(self, f"已告诉小爱同学：{text}{fallback_note}", 3000)
 
     def _on_voice_error(self, err: Exception) -> None:
+        if not shiboken6.isValid(self):
+            return
         from app.ui.toast import Toast
         Toast.info(self, f"执行失败：{err}", 4000)
 
@@ -813,7 +818,7 @@ class TrayQuickWindow(QDialog):
                 self._jobs.submit(
                     lambda: self._service.toggle_power(d),
                     on_success=lambda ns, dd=d, bb=b: self._on_toggle_done(dd, ns, bb),
-                    on_error=lambda e, bb=b: bb.set_busy(False),
+                    on_error=lambda e, bb=b: self._on_toggle_error(e, bb),
                 )
             btn.clicked.connect(_on_toggle)
             lay.addWidget(btn)
@@ -831,7 +836,16 @@ class TrayQuickWindow(QDialog):
 
     def _on_toggle_done(self, did: str, ns: bool, btn) -> None:
         self._known_power[did] = ns
+        # toggle_power 走串行队列，网络耗时数秒；期间 _rebuild/retheme 可能
+        # 已销毁按钮（C++ 对象已删）——回调必须先验存活再碰控件
+        if not shiboken6.isValid(btn):
+            return
         btn.set_state(ns)
+        btn.set_busy(False)
+
+    def _on_toggle_error(self, error: Exception, btn) -> None:
+        if not shiboken6.isValid(btn):
+            return
         btn.set_busy(False)
 
     def show_near_tray(self) -> None:

@@ -105,12 +105,17 @@ class SiSlider(QAbstractSlider):
         self.setToolTip(func(self.value()))
 
     def _onValueChanged(self, value):
-        self.progress_ani.setEndValue((value - self.minimum()) / (self.maximum() - self.minimum()))
+        # range 收缩为 0(low==high,来自设备属性 schema)时防除零,
+        # 与 SiScrollBar 的同款守卫对齐
+        span = self.maximum() - self.minimum()
+        p = (value - self.minimum()) / span if span else 0.0
+        self.progress_ani.setEndValue(p)
         self.progress_ani.start()
         self._updateToolTip(flash=False)
 
     def _onRangeChanged(self, _, __):
-        p = (self.value() - self.minimum()) / (self.maximum() - self.minimum())
+        span = self.maximum() - self.minimum()
+        p = (self.value() - self.minimum()) / span if span else 0.0
         self.setProperty(self.SiSliderProperty.TrackProgress, p)
         self.progress_ani.fromProperty()
         self.progress_ani.setCurrentValue(p)
@@ -160,10 +165,13 @@ class SiSlider(QAbstractSlider):
     def _setValueToMousePos(self, pos: QPoint) -> None:
         thumb_width = self.style_data.thumb_width
         region = self.maximum() - self.minimum()
+        # 宽/高被压到与 thumb 等宽时分母为 0;略小于时为负,点击直接跳最小值
+        h_span = max(1, self.width() - thumb_width)
+        v_span = max(1, self.height() - thumb_width)
         if self.orientation() == Qt.Orientation.Horizontal:
-            p = min(1, max((pos.x() - thumb_width / 2) / (self.width() - thumb_width), 0))
+            p = min(1, max((pos.x() - thumb_width / 2) / h_span, 0))
         else:
-            p = min(1, max(1 - (pos.y() - thumb_width / 2) / (self.height() - thumb_width), 0))
+            p = min(1, max(1 - (pos.y() - thumb_width / 2) / v_span, 0))
         self.setValue(int(self.minimum() + region * p))
 
     def _setThumbHovering(self, state: bool) -> None:
@@ -175,7 +183,8 @@ class SiSlider(QAbstractSlider):
             self.thumb_color_ani.start()
 
     def _updateDraggingAnchor(self):
-        p = (self.value() - self.minimum()) / (self.maximum() - self.minimum())
+        span = self.maximum() - self.minimum()
+        p = (self.value() - self.minimum()) / span if span else 0.0
         thumb_w = self.style_data.thumb_width
         thumb_h = self.style_data.thumb_height
         if self.orientation() == Qt.Orientation.Horizontal:
@@ -1248,7 +1257,8 @@ class SiScrollBar(QScrollBar):
             self.thumb_color_ani.start()
 
     def _updateDraggingAnchor(self):
-        p = (self.value() - self.minimum()) / (self.maximum() - self.minimum())
+        span = self.maximum() - self.minimum()
+        p = (self.value() - self.minimum()) / span if span else 0.0
         thumb_w = self.style_data.thumb_width
         thumb_h = self.style_data.thumb_height
         if self.orientation() == Qt.Orientation.Horizontal:

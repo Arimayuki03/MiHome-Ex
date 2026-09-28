@@ -60,3 +60,6 @@ logs/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# ---- 安装包构建输出 ----
+installer/Output/

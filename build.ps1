@@ -130,12 +130,27 @@ $NuitkaArgs = @(
     "--include-data-files=app\ui\icon.png=app/ui/icon.png"
     "--include-data-files=app\ui\tray_icon.png=app/ui/tray_icon.png"
     "--include-data-files=app\ui\tray_icon_light.png=app/ui/tray_icon_light.png"
+    # CUKTECH 充电器素材（舞台底图/端口条/模式图标，20+ 张 PNG）：
+    # 漏打包会让面板舞台与设置页模式图标全部空白
+    "--include-data-dir=app\ui\assets=app/ui/assets"
     "--nofollow-import-to=tkinter,unittest,pytest"
     "--noinclude-dlls=qt6datavisualization.dll"
     "--noinclude-dlls=qt6pdf.dll"
+    # shiboken6 wheel 自带一份 MSVC 运行库 DLL（msvcp140 系等），
+    # PySide6 目录里已有同款；360 实时防护对"新写入的运行库 DLL"是
+    # 确定性锁定（连续 5 次构建 PermissionError 均落在这批文件）。
+    # 排除后运行期由 Windows System32 提供系统级运行库（装了
+    # VC++ Redistributable 的机器必有），应用行为不变
+    "--noinclude-dlls=msvcp140*.dll"
+    "--noinclude-dlls=concrt140.dll"
+    "--noinclude-dlls=vcamp140.dll"
+    "--noinclude-dlls=vccorlib140.dll"
+    "--noinclude-dlls=vcomp140.dll"
+    "--noinclude-dlls=vcruntime140*.dll"
+    "--noinclude-dlls=msvcp140_codecvt_ids.dll"
     "--jobs=4"
     "--assume-yes-for-downloads"
-    "--output-dir=dist"
+    "--output-dir=build.dist"
     "--output-filename=MiHome-Ex.exe"
     # 版本号自动从 app/__init__.py 的 __version__ 读取，单一信源
     $AppVersion = (Select-String -Path "app\__init__.py" -Pattern '^__version__\s*=\s*"(.+?)"').Matches[0].Groups[1].Value
@@ -149,22 +164,40 @@ $NuitkaArgs = @(
 Write-Host "`nBuilding MiHome-Ex..." -ForegroundColor Cyan
 Write-Host "(这是最耗时的一步，通常需要几分钟；期间会输出 Nuitka 各阶段进度，请勿关闭窗口)`n" -ForegroundColor Yellow
 $BuildStart = Get-Date
-& $Python -m nuitka @NuitkaArgs
+
+# 360 等安全软件对"新写入 D 盘项目目录的运行库 DLL"存在确定性锁定
+# （连续多次构建 PermissionError 落在 msvcp140/vcruntime140 等文件）。
+# 输出到 %TEMP%（安全软件对用户临时目录拦截概率低很多），成功后回搬。
+# $NuitkaArgs 里 --output-dir 占位为 build.dist，实际写入临时目录。
+$TempBuild = Join-Path $env:TEMP "mihome-build"
+if (Test-Path $TempBuild) { Remove-Item $TempBuild -Recurse -Force }
+$NuitkaArgs = @($NuitkaArgs | ForEach-Object { $_ -replace '^--output-dir=build\.dist$', "--output-dir=$TempBuild" })
+
+$BuildAttempt = 0
+$MaxAttempts = 3
+do {
+    $BuildAttempt += 1
+    & $Python -m nuitka @NuitkaArgs
+    if ($LASTEXITCODE -eq 0) { break }
+    if ($BuildAttempt -lt $MaxAttempts) {
+        Write-Host "`n[WARN] 第 $BuildAttempt 次构建失败（常见原因：杀软锁 DLL）。5 秒后自动重试…`n" -ForegroundColor Yellow
+        Start-Sleep -Seconds 5
+    }
+} while ($BuildAttempt -lt $MaxAttempts)
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] 构建失败" -ForegroundColor Red
+    Write-Host "[ERROR] 构建失败（已重试 $($MaxAttempts - 1) 次）。" -ForegroundColor Red
+    Write-Host "若错误仍指向某个 DLL 被占用：把项目 dist 目录加入杀软（如 360）信任区后重试。" -ForegroundColor Yellow
     exit 1
 }
+
+# 回搬：standalone 产物 run.dist 摊平到项目 dist\（.iss 打包源）
+Write-Host "`nMoving build output to dist\ ..." -ForegroundColor Cyan
+if (Test-Path "dist") { Remove-Item "dist" -Recurse -Force }
+Copy-Item (Join-Path $TempBuild "run.dist") "dist" -Recurse
+Remove-Item $TempBuild -Recurse -Force -ErrorAction SilentlyContinue
 $Elapsed = (Get-Date) - $BuildStart
 Write-Host ("`n编译耗时 {0:00}:{1:00}" -f [int]$Elapsed.TotalMinutes, $Elapsed.Seconds) -ForegroundColor Gray
-
-# ============================================================
-# 6. 整理输出
-# ============================================================
-if (Test-Path "dist\run.dist") {
-    robocopy "dist\run.dist" "dist" /move /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
-    Remove-Item "dist\run.build" -Recurse -Force -ErrorAction SilentlyContinue
-}
 
 $Exe = "dist\MiHome-Ex.exe"
 if (Test-Path $Exe) {

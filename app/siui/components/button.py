@@ -976,7 +976,11 @@ class SiSwitchRefactor(QPushButton):
         self.progress_ani = SiExpAnimationRefactor(self, self.SiSwitchRefactorProperty.Progress)
         self.progress_ani.init(1 / 4, 0.01, 0, 0)
 
-        self.clicked.connect(self._onClicked)
+        # 连 toggled 而非 clicked:程序化 setChecked()(SSE 回读/状态同步
+        # 路径)也驱动进度动画,视觉与状态一致。业务代码曾有 5 处
+        # "手动补动画" workaround,本连接下可自然工作;clicked 发射前
+        # toggled 已触发,点击路径行为不变。
+        self.toggled.connect(self._onChecked)
 
     def _initStyle(self) -> None:
         self.setFixedSize(40, 20)
@@ -999,8 +1003,8 @@ class SiSwitchRefactor(QPushButton):
         self._progress = value
         self.update()
 
-    def _onClicked(self):
-        if self.isChecked():
+    def _onChecked(self, checked: bool):
+        if checked:
             self.progress_ani.setEndValue(1)
             self.progress_ani.start()
         else:

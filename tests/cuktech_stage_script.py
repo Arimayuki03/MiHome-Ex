@@ -24,11 +24,13 @@ os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, ".")
 
+__test__ = False  # 脚本式测试：python 直接执行，pytest 收集会误报
+
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication
 
-app = QApplication([])
+app = QApplication.instance() or QApplication([])
 
 from app.ui import si_theme
 from app.ui.si_theme import SiColors

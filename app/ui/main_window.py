@@ -785,6 +785,11 @@ class MainWindow(QMainWindow):
             if ret == QMessageBox.Yes:
                 self._force_quit = True
                 restart_app()
+                # restart_app 只 quit 事件循环、不触发 closeEvent，SSE/jobs
+                # 线程会活到析构即 qFatal；这里显式 close() 走完整退出清理
+                # （closeEvent 内 device_cache.save + _stop_cuktech_stream +
+                # jobs.shutdown），然后事件循环自然结束完成重启
+                self.close()
         # 设置可能变了，同步托盘图标显隐
         from app.core.settings_store import get_minimize_to_tray
         if self._tray is not None:
@@ -1207,6 +1212,11 @@ class MainWindow(QMainWindow):
         anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
 
     def _on_load_error(self, error: Exception) -> None:
+        # 复位防重入标志与刷新按钮：否则一次网络失败后 load_devices 永远
+        # 被 _loading_devices 拦下，按钮永久停在"刷新中…"，无缓存时只能重启
+        self._loading_devices = False
+        self._refresh_action.setEnabled(True)
+        self._refresh_action.setText("刷新")
         self._show_status("加载失败", 4000)
         QMessageBox.critical(self, "加载失败", str(error))
 

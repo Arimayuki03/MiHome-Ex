@@ -616,11 +616,17 @@ class CuktechDeviceCard(SiRowCard):
             if entry.get("active"):
                 active += 1
         settings = status.get("settings") or {}
-        try:
-            bitmap = int(settings.get("16", 15))
-        except (TypeError, ValueError):
-            bitmap = 15
-        self._output_on = bitmap != 0
+        if "16" in settings:
+            # 位图键存在才更新总开关:首帧 status 未到时(port_update 先
+            # 到的窗口)默认值 15 会把"未知"误判成"开",用户基于它点
+            # 总开关可能误关全部输出口。缺键保持 None(未知态)。
+            try:
+                bitmap = int(settings["16"])
+            except (TypeError, ValueError):
+                bitmap = 15
+            self._output_on = bitmap != 0
+        elif self._output_on is None:
+            self._output_on = False
 
         self._apply_card_color()
         self._apply_text_colors()
@@ -1830,7 +1836,10 @@ class CuktechPanel(QWidget):
         detail = self._port_detail
         if detail is not None and shiboken6.isValid(detail):
             detail.push_port_sample(port_id, data)
-        self._reset_poll_timer()
+        # 注意:此处不复位轮询计时器。port_update 充电中约 1s 一条,而
+        # 限额/会话累计/曲线只由 5s 轮询拉取(不走 SSE),每条推送都
+        # 重置计时器会让它永远到期不了——充电期间头部 Wh、限额进度、
+        # 曲线全部冻结。push_status/push_settings(全量帧)才重置。
 
     def push_status(self, payload: dict) -> None:
         """SSE status 注入：全量状态整帧替换后复用 _render_status。

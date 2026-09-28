@@ -432,7 +432,8 @@ class _HourlyBarChart(QWidget):
         self.setMouseTracking(True)
 
     def set_data(self, values: list[float], labels: list[str]) -> None:
-        """整组替换数据；等长截断到 24 桶（服务端 24h 窗即 24-25 桶）。"""
+        """整组替换数据；截断到 24 桶（防御：服务端按同相位整点对齐恒返
+        24 桶、且不含当前未满小时，正常路径不会超）。"""
         n = min(len(values), len(labels), 24)
         self._values = [float(v or 0.0) for v in values[:n]]
         self._labels = [str(label) for label in labels[:n]]
@@ -532,8 +533,13 @@ class _HourlyBarChart(QWidget):
                          "暂无每小时数据")
 
     def _tick_label(self, value: float) -> str:
-        """Wh 刻度文案：步长取整后恒为整洁数字（50/100/200，0 线必标）。"""
-        return f"{round(value):d}"
+        """Wh 刻度文案（0 线必标）。
+
+        步长通常是整洁整数，但 _nice_ceil 的 2.5 档（峰值 7.4-9.3Wh 的
+        轻载日）会得到 0/2.5/5/7.5/10 线位——round 银行家舍入输出
+        0/2/5/8/10，与线位错位，故按值是否整一动态选位数。
+        """
+        return f"{value:g}"
 
     def _paint_bars(self, painter: QPainter) -> None:
         # 左侧 42px 数值带给 Y 轴刻度，其余边距与主曲线同源
@@ -1262,9 +1268,10 @@ class EnergySummaryWidget(QWidget):
         if self._service is None or self._jobs is None or self._hourly_in_flight:
             return
         self._hourly_in_flight = True
+        period = self._period  # 快照：响应期间周期再变则不覆盖缓存标志
         self._jobs.submit(
             lambda: self._service.cuktech_chart(hours=24, interval=3600),
-            on_success=self._on_hourly,
+            on_success=lambda payload: self._on_hourly(payload, period),
             on_error=self._on_hourly_error,
         )
 
@@ -1307,8 +1314,13 @@ class EnergySummaryWidget(QWidget):
         self._power_range.setText("—")
         Toast.info(self, f"能量统计加载失败：{error}", 3000)
 
-    def _on_hourly(self, payload: dict | None) -> None:
+    def _on_hourly(self, payload: dict | None, period: str | None = None) -> None:
         self._hourly_in_flight = False
+        # 响应期间周期已被切换：本数据与周期无关（固定滚动 24h），仍可
+        # 渲染，但不得把「每小时缓存已失效」标志覆盖回有效——那会让下次
+        # 切入该 Tab 误以为数据是新的。交给随后的重拉恢复。
+        if period is not None and period != self._period:
+            return
         self._hourly_loaded = True
         if not shiboken6.isValid(self):
             return
@@ -1321,7 +1333,19 @@ class EnergySummaryWidget(QWidget):
                 total = ds.get("data") or []
                 break
         if not total and power_sets and isinstance(power_sets[0], dict):
-            total = power_sets[0].get("data") or []
+            # 服务端契约恒含 Total；若未来契约变更缺失，按四口求和兜底，
+            # 不再把 C1 单口数据当 Total 显示（数值偏小且无提示）
+            totals_by_idx: list[float] | None = None
+            for ds in power_sets:
+                if not isinstance(ds, dict) or not isinstance(ds.get("data"), list):
+                    continue
+                data = ds["data"]
+                if totals_by_idx is None:
+                    totals_by_idx = [float(v or 0.0) for v in data]
+                else:
+                    for i, v in enumerate(data):
+                        totals_by_idx[i] += float(v or 0.0)
+            total = totals_by_idx or []
         # labels 原样下传（%m-%d %H:%M 本地时间文案）：X 轴刻度与
         # tooltip 都取完整文案，跨天窗口也能正确显示
         self._hourly_chart.set_data(total, [str(l) for l in labels])
@@ -1460,6 +1484,10 @@ class SessionCurveWidget(QWidget):
         self._jobs = None
         self._session_id: int | None = None
         self._in_flight = False
+        # 请求代际号：show_session 每次提交自增，回调比对——容器在点列
+        # 飞行中切换会话（点击行 B 时已 set_summary/set_period 写入 B 的
+        # 状态）或精度时，旧响应直接丢弃，避免"曲线是 A、标题是 B"。
+        self._points_epoch = 0
         self._export_in_flight = False
         self._downsample = 200  # 缺省与精度下拉「200 点」档一致
         self._summary: tuple[float | None, float | None] | None = None
@@ -1598,12 +1626,14 @@ class SessionCurveWidget(QWidget):
         if self._in_flight:
             return
         self._in_flight = True
+        self._points_epoch += 1
+        epoch = self._points_epoch
         downsample = self._downsample
         self._jobs.submit(
             lambda: self._service.cuktech_session_points(
                 self._session_id, downsample),
-            on_success=self._on_points,
-            on_error=self._on_error,
+            on_success=lambda payload: self._on_points(payload, epoch),
+            on_error=lambda error: self._on_error(error, epoch),
         )
 
     def set_summary(self, avg_voltage: float | None,
@@ -1671,9 +1701,12 @@ class SessionCurveWidget(QWidget):
         else:
             self._summary_label.setText(f"{avg_v:.1f}V · {avg_a:.2f}A")
 
-    def _on_points(self, payload: dict | None) -> None:
+    def _on_points(self, payload: dict | None, epoch: int | None = None) -> None:
         self._in_flight = False
         if not shiboken6.isValid(self):
+            return
+        # 过期响应丢弃：飞行中已切换会话/精度（epoch 已自增）
+        if epoch is not None and epoch != self._points_epoch:
             return
         points = (payload or {}).get("points") or []
         powers: list[float] = []
@@ -1693,8 +1726,14 @@ class SessionCurveWidget(QWidget):
                 times.append("")
             protocols.append(str(point.get("protocol") or ""))
         self._curve.set_series(powers, times, protocols=protocols)
-        self._metrics = _compute_session_metrics(
-            points if isinstance(points, list) else [])
+        # 点列为空（404/无采样/已被清理）：指标与摘要回落「—」，不渲染
+        # 全 0 统计误导用户（与 clear() 口径一致）
+        if not points:
+            self._metrics = {}
+            self._render_summary()
+            self._render_metrics()
+            return
+        self._metrics = _compute_session_metrics(points)
         # 摘要优先用点列计算的均压/均流：会话行 avg_* 是旧版瞬时值
         # （恒 0），点列值与五项指标同源且对旧数据同样正确。点列为空
         # （404/无采样）时保留调用方传入值，不落 0。
@@ -1754,9 +1793,12 @@ class SessionCurveWidget(QWidget):
             return
         Toast.info(self, f"CSV 导出失败：{error}", 4000)
 
-    def _on_error(self, error: Exception) -> None:
+    def _on_error(self, error: Exception, epoch: int | None = None) -> None:
         self._in_flight = False
         if not shiboken6.isValid(self):
+            return
+        # 过期请求的错误不提示（用户已切换到别的内容）
+        if epoch is not None and epoch != self._points_epoch:
             return
         Toast.info(self, f"会话曲线加载失败：{error}", 3000)
 

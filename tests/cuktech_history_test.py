@@ -33,7 +33,7 @@ sys.path.insert(0, ".")
 
 from PySide6.QtWidgets import QApplication
 
-app = QApplication([])
+app = QApplication.instance() or QApplication([])
 
 # 测试禁写运行数据：仿 theme_test，防假数据经任何回写路径泄漏
 from app.core import cache as _device_cache
