@@ -18,6 +18,8 @@
 
 **[下载最新版](https://github.com/Arimayuki03/MiHome-Ex/releases/latest) · [功能一览](#-功能) · [快速开始](#-快速开始) · [构建](#-构建可执行文件) · [参与贡献](#-参与贡献)**
 
+<img src="docs/images/screenshot-main.png" alt="MiHome-Ex 主界面：设备卡片网格，按家庭/房间分组，实时显示在线状态与设备数据" width="880">
+
 </div>
 
 ---
@@ -45,6 +47,8 @@
 ### CUKTECH 充电器本地控制（本 fork 扩展）
 
 通过内置 BLE 服务端（扩展组件，随主程序启停）经蓝牙/局域网直连 [CUKTECH（酷态科）10 Ultra 充电器](https://github.com/Arimayuki03/cuktech-ble-server)，数据不经过米家云端：
+
+<img src="docs/images/screenshot-cuktech-panel.png" alt="CUKTECH 充电器实时面板：设备渲染舞台与四口功率卡片（C1/C2/C3/USB-A），显示逐口功率、电压电流与快充协议" width="880">
 
 - **专用设备卡片与实时面板**：总功率、四口（C1/C2/C3/A）逐口功率、端口开关，SSE 推送实时更新、轮询兜底
 - **充电器一键登录**：复用米家扫码会话自动提取蓝牙凭据写入内置服务端，免去二次扫码（设置 → 应用功能）
