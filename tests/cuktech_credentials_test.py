@@ -40,11 +40,48 @@ def ok(name: str) -> None:
 
 # 假凭据：仅供测试断言，无真实意义
 AUTH = {"userId": "1234567890", "serviceToken": "T" * 40,
-        "ssecurity": "c2VjdXJpdHktZGVtbw=="}  # base64("security-demo")
+        "ssecurity": "c2VjdXJpdHktZGVtbw==",  # base64("security-demo")
+        "passToken": "PT" * 20}
+IO_AUTH = {"userId": "1234567890", "serviceToken": "IO" * 20,
+           "ssecurity": "c2VjdXJpdHktZGVtbw=="}
+LOCATION = "http://127.0.0.1/sts?ticket=one-time"  # host 部分在 main 里重写
 CHARGER = {"did": "900001", "mac": "AA:BB:CC:DD:EE:01", "token": "TOK" * 8,
            "model": "njcuk.fitting.ad1204_", "name": "酷态科充电器"}
 OTHER = {"did": "900002", "mac": "AA:BB:CC:DD:EE:02", "token": "T" * 24,
          "model": "yeelink.light.lamp22", "name": "台灯"}
+
+
+class FakeAccounts(BaseHTTPRequestHandler):
+    """假小米账户服务：serviceLogin(sid=xiaomiio) 换发 io 域 token。"""
+
+    last_pass_token: str | None = None
+
+    def do_GET(self):  # noqa: N802
+        if self.path.startswith("/pass/serviceLogin"):
+            self.rfile.read(0)
+            type(self).last_pass_token = AUTH["passToken"]
+            payload = json.dumps({
+                "code": 0, "userId": int(AUTH["userId"]),
+                "ssecurity": IO_AUTH["ssecurity"], "location": LOCATION,
+            })
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"&&&START&&&" + payload.encode())
+            return
+        if self.path.startswith("/sts"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Set-Cookie",
+                             f"serviceToken={IO_AUTH['serviceToken']}; Path=/")
+            self.end_headers()
+            self.wfile.write(b"ok")
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, fmt, *args):
+        pass
 
 
 class FakeXiaomiCloud(BaseHTTPRequestHandler):
@@ -53,7 +90,7 @@ class FakeXiaomiCloud(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         uri = self.path.replace("/app", "").split("?")[0]
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-        auth = AUTH
+        auth = IO_AUTH
 
         from urllib.parse import parse_qs
         from mijiaAPI.miutils import get_signed_nonce
@@ -112,15 +149,24 @@ class FakeBleServer(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    # ---- 假小米云起服务，指向 127.0.0.1 ----
+    # ---- 假小米云 / 假账户服务起服务，指向 127.0.0.1 ----
     cloud = ThreadingHTTPServer(("127.0.0.1", 0), FakeXiaomiCloud)
     threading.Thread(target=cloud.serve_forever, daemon=True).start()
+    accounts = ThreadingHTTPServer(("127.0.0.1", 0), FakeAccounts)
+    threading.Thread(target=accounts.serve_forever, daemon=True).start()
     ble = ThreadingHTTPServer(("127.0.0.1", 0), FakeBleServer)
     threading.Thread(target=ble.serve_forever, daemon=True).start()
 
     import app.core.cuktech_credentials as cred
     saved_host = cred._IO_HOST
+    saved_login = cred._SERVICE_LOGIN_URL
     cred._IO_HOST = f"http://127.0.0.1:{cloud.server_address[1]}"
+    accounts_base = f"http://127.0.0.1:{accounts.server_address[1]}"
+    cred._SERVICE_LOGIN_URL = (
+        accounts_base + "/pass/serviceLogin?_json=true&sid=xiaomiio&_locale=zh_CN")
+    # location 的 host 也指向假账户服务（原为 https://sts.api.io.mi.com/sts）
+    # 脚本直跑时本模块是 __main__，必须经 globals() 重绑定才能被 handler 读到
+    globals()["LOCATION"] = accounts_base + "/sts?ticket=one-time"
     # _signed_request 拼 f"{_IO_HOST}/app" + uri —— 假服务不区分 /app 前缀
     try:
         print("== 凭据提取（假小米云） ==")
@@ -130,10 +176,44 @@ def main() -> int:
         assert creds["mac"] == CHARGER["mac"], creds
         assert creds["token"] == CHARGER["token"], creds
         assert creds["ble_key"] == "BK" * 8, creds
-        ok("extract_credentials 全链路（homelist→设备列表→beaconkey）返回四要素")
+        ok("extract_credentials 全链路（token换发→homelist→设备列表→beaconkey）返回四要素")
+
+        assert FakeAccounts.last_pass_token == AUTH["passToken"]
+        ok("换发请求携带 passToken（sid=xiaomiio）")
 
         assert creds.get("ble_key") not in ("", "None")
         ok("beaconkey 为非空字符串")
+
+        # ---- 缺 passToken：无法换发 io 域 token ----
+        bad = {k: v for k, v in AUTH.items() if k != "passToken"}
+        err = None
+        try:
+            extract_credentials(auth_data=bad)
+        except CredentialError as exc:
+            err = exc
+        assert err is not None and "passToken" in str(err), err
+        ok("缺 passToken 时中文报错并提示重新扫码")
+
+        # ---- 换发被拒（登录态失效） ----
+        orig_get = FakeAccounts.do_GET
+
+        def rejected_login(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"&&&START&&&"
+                             + json.dumps({"code": 87001,
+                                           "message": "invalid"}).encode())
+
+        FakeAccounts.do_GET = rejected_login
+        err = None
+        try:
+            extract_credentials(auth_data=dict(AUTH))
+        except CredentialError as exc:
+            err = exc
+        FakeAccounts.do_GET = orig_get
+        assert err is not None and "重新扫码" in str(err), err
+        ok("换发被拒时报中文 CredentialError 提示重新扫码")
 
         # ---- 没有充电器的家庭 ----
         orig_list = FakeXiaomiCloud.do_POST
@@ -203,7 +283,9 @@ def main() -> int:
         return 0
     finally:
         cred._IO_HOST = saved_host
+        cred._SERVICE_LOGIN_URL = saved_login
         cloud.shutdown()
+        accounts.shutdown()
         ble.shutdown()
 
 

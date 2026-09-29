@@ -7,9 +7,18 @@
 beaconkey），写入本地 BLE 服务端配置，消除"桌面端扫一次码、BLE 服务端
 再扫一次码"的二次登录。
 
-实现依据（ADR-009，2026-09-28 核查）：
+实现依据（ADR-009，2026-09-28 核查；2026-09-29 实证修订）：
 - mijiaAPI auth.json 已含 userId / serviceToken / ssecurity 三要素，
   ``miutils`` 提供 RC4 签名加密原语，与小米云 API 的加密通道完全一致；
+- **serviceToken 有服务域之分（2026-09-29 实证）**：mijiaAPI QR 登录走
+  ``sid=mijia``（apis.py service_login_url），换得的 serviceToken 只对
+  ``api.mijia.tech`` 有效；beaconkey/设备列表端点在 ``api.io.mi.com``，
+  该域要求 ``sid=xiaomiio`` 域的 token，mijia 的 token 直调一律返回
+  HTTP 401 {"code":2,"message":"auth error"}（本机真机复现，与请求
+  编码风格/cookie 补全无关）。因此先拿 auth.json 的 passToken 走
+  ``account.xiaomi.com/pass/serviceLogin?_json=true&sid=xiaomiio``
+  换发 io.mi.com 域 token（与上游 xiaomi_cloud.py 登录路径同源），
+  换发成功后用返回的 ssecurity + 新 serviceToken 签名请求；
 - 服务端点 ``POST {io_host}/v2/device/blt_get_beaconkey``（data 为
   JSON 的 {"did": ..., "pdid": 1}），响应 result.beaconkey 即 BLE key；
 - 云端设备列表（get_devices_list 返回的原始 dict）里含 did / mac /
@@ -22,7 +31,9 @@ beaconkey），写入本地 BLE 服务端配置，消除"桌面端扫一次码�
   直接对传入 uri 计算，因此**必须传归一化路径**（"/v2/device/..."）而非
   完整 URL，否则签名不一致、服务端返回非法请求（本地实证两签名不同）；
 - beaconkey 是长期 BLE 凭据，**严禁写日志或异常文本**（上游曾在 info
-  级日志整体泄露，见代码审查 2026-09-28）——本模块只记录"是否存在"。
+  级日志整体泄露，见代码审查 2026-09-28）——本模块只记录"是否存在"；
+- passToken 换发响应含新 ssecurity/location，同样属登录凭据，**只记
+  成败与状态码，不记内容**。
 
 线程约定：纯同步、可重入性无保证，由调用方（service 门面）经 jobs
 串行队列在后台线程调用。
@@ -52,6 +63,12 @@ _IO_HOST = "https://api.io.mi.com"
 _BEACONKEY_URI = "/v2/device/blt_get_beaconkey"
 _DEVICE_LIST_URI = "/home/home_device_list"
 
+# passToken 换发 io.mi.com 域 serviceToken 的账户端点（sid 必须是
+# xiaomiio——mijia 域 token 对 io.mi.com 无效，实证见模块 docstring）。
+# 返回 ssecurity 与一次性 location，GET location 后 cookie 里带新 token
+_SERVICE_LOGIN_URL = ("https://account.xiaomi.com/pass/serviceLogin"
+                      "?_json=true&sid=xiaomiio&_locale=zh_CN")
+
 # 充电器型号识别口径：model 含 njcuk（真机 njcuk.fitting.ad1204_）或
 # fitting（上游 ha_server 同款宽匹配），大小写不敏感
 _MODEL_KEYWORDS = ("njcuk", "fitting")
@@ -64,6 +81,51 @@ class CredentialError(Exception):
 def _is_cuktech_model(model: str) -> bool:
     model = (model or "").lower()
     return any(k in model for k in _MODEL_KEYWORDS)
+
+
+def _exchange_io_token(session: requests.Session,
+                       auth: dict[str, Any]) -> tuple[str, str, str]:
+    """用 passToken 换发 io.mi.com 域 serviceToken，返回 (userId, serviceToken, ssecurity)。
+
+    mijiaAPI 登录的 serviceToken 是 mijia 域的，对 api.io.mi.com 一律
+    401（实证见模块 docstring）；beaconkey 链路必须先经账户侧
+    serviceLogin（sid=xiaomiio）换发。ssecurity 用换发响应新返回的
+    （与 token 同域配套），签名才一致。换发响应/请求不带凭据落日志。
+    """
+    pass_token = str(auth.get("passToken") or "")
+    if not pass_token:
+        raise CredentialError(
+            "登录凭据缺少 passToken，无法访问小米 IoT 服务，请重新扫码登录")
+    try:
+        resp = session.get(
+            _SERVICE_LOGIN_URL,
+            cookies={"userId": str(auth["userId"]), "passToken": pass_token},
+            timeout=(5, 30))
+    except requests.RequestException as exc:
+        raise CredentialError(f"小米账户服务请求失败：{exc}") from exc
+    text = resp.text.strip()
+    if text.startswith("&&&START&&&"):
+        text = text[len("&&&START&&&"):]
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise CredentialError(
+            f"小米账户服务返回异常（HTTP {resp.status_code}）") from exc
+    if not isinstance(data, dict) or data.get("code") != 0 or not data.get("location"):
+        raise CredentialError(
+            "小米账户登录态已失效（换发 IoT 凭据被拒），请重新扫码登录")
+    # location 一次性：GET 后 cookie 才带上 io 域 serviceToken
+    try:
+        resp = session.get(str(data["location"]), timeout=(5, 30))
+    except requests.RequestException as exc:
+        raise CredentialError(f"小米账户服务请求失败：{exc}") from exc
+    token = resp.cookies.get("serviceToken") or session.cookies.get("serviceToken")
+    if not token:
+        raise CredentialError(
+            "小米账户未返回 IoT 服务凭据，请重新扫码登录")
+    user_id = str(data.get("userId") or auth.get("userId") or "")
+    ssecurity = str(data.get("ssecurity") or auth.get("ssecurity") or "")
+    return user_id, token, ssecurity
 
 
 def _signed_request(session: requests.Session, auth: dict[str, Any],
@@ -122,7 +184,10 @@ def _signed_request(session: requests.Session, auth: dict[str, Any],
 
 
 def _device_list(session: requests.Session, auth: dict[str, Any]) -> list[dict]:
-    """拉取全部家庭的云端设备原始列表（含 token/mac 字段）。"""
+    """拉取全部家庭的云端设备原始列表（含 token/mac 字段）。
+
+    auth 为换发后的 io 域凭据（userId/serviceToken/ssecurity 三要素）。
+    """
     home_ret = _signed_request(session, auth, "/v2/homeroom/gethome", {
         "fg": True, "fetch_share": True, "fetch_share_dev": True,
         "limit": 300, "app_ver": 7,
@@ -178,6 +243,9 @@ def extract_credentials(auth_data: dict[str, Any] | None = None,
     auth_data 缺省读 mijiaAPI 标准位置的 auth.json（只取字段值，文件
     其余内容不触碰）；session 可注入供测试。任何一步失败抛
     CredentialError（中文、无凭据内容）。
+
+    流程：passToken 换发 io 域 token（_exchange_io_token）→ 设备列表
+    找充电器 → 拉该设备 beaconkey。
     """
     if auth_data is None:
         from pathlib import Path
@@ -196,14 +264,17 @@ def extract_credentials(auth_data: dict[str, Any] | None = None,
     own_session = session is None
     sess = requests.Session() if session is None else session
     try:
-        devices = _device_list(sess, auth_data)
+        user_id, io_token, io_ssecurity = _exchange_io_token(sess, auth_data)
+        io_auth = {"userId": user_id, "serviceToken": io_token,
+                   "ssecurity": io_ssecurity}
+        devices = _device_list(sess, io_auth)
         charger = _pick_charger(devices)
         did = str(charger.get("did") or "")
         mac = str(charger.get("mac") or "")
         token = str(charger.get("token") or "")
         if not did or not token:
             raise CredentialError("云端充电器条目缺少 did/token，无法配置")
-        ble_key = _beaconkey(sess, auth_data, did)
+        ble_key = _beaconkey(sess, io_auth, did)
         return {"did": did, "mac": mac, "token": token, "ble_key": ble_key}
     finally:
         if own_session:
