@@ -140,3 +140,114 @@ def test_state_signal_emitted_on_change() -> None:
     m._set_state("starting")
     m._set_state("starting")  # 重复置同一状态不发
     assert states == ["starting"]
+
+
+# ---------- 意外退出自动重启（服务端自重启约定） ----------
+
+
+def _flush_timers() -> None:
+    """跑完当前排队的 QTimer.singleShot 回调（无 pytest-qt，手动转事件循环）。
+
+    """
+    from PySide6.QtCore import QEventLoop
+
+    loop = QCoreApplication.instance() or QCoreApplication([])
+    for _ in range(50):  # 上限防死循环
+        loop.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 100)
+
+
+def test_exit_zero_schedules_supervised_restart(monkeypatch) -> None:
+    """退出码 0（服务端配置写入后的约定自重启）→ 延迟后自动拉起。
+
+    monkeypatch start() 捕获调用而非真拉进程；settings 开关开。
+    """
+    import app.core.ble_server_manager as mod
+
+    m = _make_manager(probe_returns=False)
+    m._external = False
+    m._state = "running"
+    calls: list[int] = []
+    original_start = mod.BleServerManager.start
+    monkeypatch.setattr(mod, "_RESTART_DELAY_MS", 0)
+    try:
+        mod.BleServerManager.start = lambda self: calls.append(1)
+        m._on_finished(0, None)
+        assert m.state == "stopped" and m._restart_attempts == 0
+        _flush_timers()
+        assert len(calls) == 1, "退出码 0 应延迟重启一次"
+    finally:
+        mod.BleServerManager.start = original_start
+
+
+def test_exit_nonzero_backoff_and_gives_up(monkeypatch) -> None:
+    """非零退出（崩溃）→ 退避重启，超过上限不再拉起。"""
+    import app.core.ble_server_manager as mod
+
+    m = _make_manager(probe_returns=False)
+    m._external = False
+    m._state = "running"
+    calls: list[int] = []
+    original_start = mod.BleServerManager.start
+    monkeypatch.setattr(mod, "_RESTART_DELAY_MS", 0)
+    try:
+        mod.BleServerManager.start = lambda self: calls.append(1)
+        # 连续崩溃：1、2 次安排重启，第 3 次到上限不再安排
+        for expected_attempt in (1, 2, 3):
+            m._on_finished(1, None)
+            assert m._restart_attempts == expected_attempt
+            _flush_timers()
+            scheduled = len(calls)
+            assert scheduled == min(expected_attempt, mod._RESTART_MAX_ATTEMPTS)
+        assert len(calls) == mod._RESTART_MAX_ATTEMPTS
+    finally:
+        mod.BleServerManager.start = original_start
+
+
+def test_restart_skipped_when_stop_requested_or_disabled(monkeypatch) -> None:
+    """stop 请求在途 / 设置开关关闭时，退出不触发重启。"""
+    import app.core.ble_server_manager as mod
+
+    original_start = mod.BleServerManager.start
+    calls: list[int] = []
+    monkeypatch.setattr(mod, "_RESTART_DELAY_MS", 0)
+    try:
+        mod.BleServerManager.start = lambda self: calls.append(1)
+
+        m = _make_manager(probe_returns=False)
+        m._state = "running"
+        m._stop_requested = True  # 用户主动停止
+        m._on_finished(0, None)
+        _flush_timers()
+        assert calls == []
+
+        original = settings_store.get_ble_server_enabled()
+        try:
+            settings_store.set_ble_server_enabled(False)
+            m2 = _make_manager(probe_returns=False)
+            m2._state = "running"
+            m2._on_finished(0, None)
+            _flush_timers()
+            assert calls == []
+        finally:
+            settings_store.set_ble_server_enabled(original)
+    finally:
+        mod.BleServerManager.start = original_start
+
+
+def test_restart_skipped_for_external_instance(monkeypatch) -> None:
+    """外部实例（非本管理器拉起）退出时不代管重启。"""
+    import app.core.ble_server_manager as mod
+
+    m = _make_manager(probe_returns=False)
+    m._external = True
+    m._state = "running"
+    calls: list[int] = []
+    original_start = mod.BleServerManager.start
+    monkeypatch.setattr(mod, "_RESTART_DELAY_MS", 0)
+    try:
+        mod.BleServerManager.start = lambda self: calls.append(1)
+        m._on_finished(0, None)
+        _flush_timers()
+        assert calls == []
+    finally:
+        mod.BleServerManager.start = original_start

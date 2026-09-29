@@ -29,6 +29,10 @@ _SERVER_PORT = 8199
 _READY_POLL_MS = 500
 _READY_POLLS_MAX = 20  # 500ms × 20 = 10s：cold start 含 winrt 初始化的余量
 _STOP_WAIT_MS = 3000
+# 配置写入后服务端自重启（win32 干净退出交由本管理器拉起）的延迟；
+# 以及非零退出的自动重启退避上限（防崩溃循环占满 CPU）
+_RESTART_DELAY_MS = 2000
+_RESTART_MAX_ATTEMPTS = 3
 
 
 def _default_url() -> str:
@@ -112,6 +116,8 @@ class BleServerManager(QObject):
         # 测试可注入的探测函数：url -> 服务是否应答（默认 HTTP 探活）
         self._probe = self._probe_http
         self._stop_requested = False
+        # 非零退出连续计数（成功重启后归零），驱动退避重启
+        self._restart_attempts = 0
 
     # ---------- 状态 ----------
 
@@ -235,10 +241,33 @@ class BleServerManager(QObject):
     def _on_finished(self, exit_code: int, status) -> None:  # noqa: ANN001
         # 非主动停止的提前退出（崩溃/端口冲突）如实反映为 stopped；
         # starting 状态下的退出由 _poll_ready 兜底报 failed
-        if not self._stop_requested:
-            self._process = None
-            if self._state == "running":
-                self._set_state("stopped")
+        if self._stop_requested:
+            return
+        self._process = None
+        if self._state == "running":
+            self._set_state("stopped")
+        # 服务端配置写入后的自重启约定：win32 下服务端 _restart() 干净
+        # 退出（os._exit(0)，非 execv——WinRT 状态无法跨 exec 重建），
+        # 由本管理器负责重新拉起。带退避防崩溃循环；外部实例（非本进程
+        # 拉起）不代管，其生命周期归外部启动方。
+        if self._external:
+            return
+        if exit_code == 0:
+            self._restart_attempts = 0
+            QTimer.singleShot(_RESTART_DELAY_MS, self._restart_if_needed)
+        else:
+            self._restart_attempts += 1
+            if self._restart_attempts <= _RESTART_MAX_ATTEMPTS:
+                delay = _RESTART_DELAY_MS * self._restart_attempts
+                QTimer.singleShot(delay, self._restart_if_needed)
+
+    def _restart_if_needed(self) -> None:
+        """延迟重启回调：功能开关仍开启且无在途 stop 才拉起。"""
+        from app.core.settings_store import get_ble_server_enabled
+        if self._stop_requested or self._state in ("starting", "running"):
+            return
+        if get_ble_server_enabled():
+            self.start()
 
     def _on_error_occurred(self, error) -> None:  # noqa: ANN001
         # FailedToStart 最常见：exe 缺失/被杀软隔离；探测循环会兜底报 failed
