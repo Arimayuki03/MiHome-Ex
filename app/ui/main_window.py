@@ -1094,7 +1094,27 @@ class MainWindow(QMainWindow):
         for did, state in states.items():
             self._apply_power_state(did, state)
         self._maybe_localize_names()
+        self._maybe_refresh_hidden_devices()
         self._update_tray_devices()
+
+    def _maybe_refresh_hidden_devices(self) -> None:
+        """“隐藏无可控制功能的设备”开启时，spec 探测结论到达后重建展示。
+
+        隐藏过滤在网格构建时求值；而 spec 缓存由开关/温湿度探测异步
+        填充——网格先建、结论后到，若不重建，无功能设备会一直留在
+        界面上（功能失效的根因）。对比"当前已建卡片"与"按最新 spec
+        应展示的集合"：不一致才重建（visible 此刻求值已含新结论，
+        不能用作 before，否则恒等永不重建）；无变化不重建，避免每轮
+        轮询白打全量卡片重建。
+        """
+        if not self._hide_no_func:
+            return
+        after = {d.did for d in self._all_devices
+                 if self._device_has_functions(d)}
+        if after >= set(self._cards.keys()):
+            return
+        self._rebuild_grid()
+        self._update_count_label()
 
     def _apply_power_state(self, did: str, state: bool | None) -> None:
         # 离线设备的开关值不落记忆，避免云端缓存的旧值覆盖灰置状态
@@ -1140,6 +1160,7 @@ class MainWindow(QMainWindow):
                 card.set_metrics(text)
         if dirty and self._all_devices:
             device_cache.save(self._all_devices, self._known_power, self._metrics)
+        self._maybe_refresh_hidden_devices()
         self._maybe_localize_names()
         self._push_tray_metrics()
 
