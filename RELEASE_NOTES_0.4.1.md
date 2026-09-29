@@ -14,8 +14,9 @@
 - 服务端配套修复见 [cuktech-ble-server v1.1.2](https://github.com/Arimayuki03/cuktech-ble-server/releases/tag/v1.1.2)
 - README 更新：徽标微调、充电器扩展功能与 fork 维护说明同步
 
-**SHA-256 校验和**（附件 SHA256SUMS.txt 同步提供，构建完成后填写）
+**SHA-256 校验和**（附件 SHA256SUMS.txt 同步提供）
 
 ```
-（待 CI 构建后生成）
+3162B9C61CC919DE5BC142E6BC0E0DEEAAABEE930EB39B1F374D517BC8E7C34F  MiHome-Ex-0.4.1-x64-portable.zip
+9C039AC26B5C8CB275BC8D01AA754D0894F195BE85F6F5F7DB2915C64BD05C5F  MiHome-Ex-setup-0.4.1.exe
 ```
