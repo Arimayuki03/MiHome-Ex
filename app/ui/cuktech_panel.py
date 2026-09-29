@@ -429,8 +429,11 @@ class CuktechDeviceCard(SiRowCard):
         self._power_btn = PowerButton(_POWER_BTN_SIZE, icon_size=24)
         self._power_btn.clicked.connect(lambda: self.power_clicked.emit(device.did))
         self._power_btn.set_online(self._online)
-        # 开关能力是已知的，直接可见；真实状态等首次轮询回填
-        self._power_btn.show()
+        # 开关能力已知，按钮直接可见（不 hide），真实状态等首次轮询回填。
+        # 此处绝不能显式 show()：此刻按钮还没进布局、没有父控件，对无父
+        # 控件调 show() 会让它以带系统标题栏的顶层窗口闪现一帧（点
+        # 「全屋」/「本地」tab 重建本卡片时的短暂弹窗）；卡片加入网格
+        # 后按钮随父控件自然显示，无需手动 show
 
         self._dot_label = QLabel("●")
         self._dot_label.setFont(QFont("Microsoft YaHei UI", 8))
