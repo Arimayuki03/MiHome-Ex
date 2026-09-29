@@ -5,7 +5,7 @@
 **米家设备的 Windows 桌面控制端（扩展版）**
 
 基于 [mijiaAPI](https://github.com/Do1e/mijia-api) 构建图形界面，扫码登录后即可在本地窗口中查看和控制家里的全部米家设备。
-由 [huanyuejue/MiHome-Windows](https://github.com/huanyuejue/MiHome-Windows) fork 改造而来，并集成了 [kairui1108/cuktech-ble-server](https://github.com/kairui1108/cuktech-ble-server) 作为本地 BLE 数据源。
+由 [huanyuejue/MiHome-Windows](https://github.com/huanyuejue/MiHome-Windows) fork 改造而来，并集成了 [kairui1108/cuktech-ble-server](https://github.com/kairui1108/cuktech-ble-server)（[本 fork 维护版](https://github.com/Arimayuki03/cuktech-ble-server)） 作为本地 BLE 数据源。
 
 [![Release](https://img.shields.io/github/v/release/Arimayuki03/MiHome-Ex?logo=github&label=%E7%89%88%E6%9C%AC)](https://github.com/Arimayuki03/MiHome-Ex/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/Arimayuki03/MiHome-Ex/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/Arimayuki03/MiHome-Ex/actions/workflows/ci.yml)
@@ -13,6 +13,7 @@
 [![Platform](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%2F11-blue?logo=windows)](https://github.com/Arimayuki03/MiHome-Ex)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Qt](https://img.shields.io/badge/Qt-6.7%20%7C%20PySide6-41CD52?logo=qt&logoColor=white)](https://www.qt.io/)
+[![GitHub Issues](https://img.shields.io/github/issues/Arimayuki03/MiHome-Ex?logo=github&label=Issues)](https://github.com/Arimayuki03/MiHome-Ex/issues)
 [![Stars](https://img.shields.io/github/stars/Arimayuki03/MiHome-Ex?style=social)](https://github.com/Arimayuki03/MiHome-Ex/stargazers)
 
 **[下载最新版](https://github.com/Arimayuki03/MiHome-Ex/releases/latest) · [功能一览](#-功能) · [快速开始](#-快速开始) · [构建](#-构建可执行文件) · [参与贡献](#-参与贡献)**
@@ -43,7 +44,7 @@
 
 ### CUKTECH 充电器本地控制（本 fork 扩展）
 
-通过内置 BLE 服务端（扩展组件，随主程序启停）经蓝牙/局域网直连 [CUKTECH（酷态科）10 Ultra 充电器](https://github.com/kairui1108/cuktech-ble-server)，数据不经过米家云端：
+通过内置 BLE 服务端（扩展组件，随主程序启停）经蓝牙/局域网直连 [CUKTECH（酷态科）10 Ultra 充电器](https://github.com/Arimayuki03/cuktech-ble-server)，数据不经过米家云端：
 
 - **专用设备卡片与实时面板**：总功率、四口（C1/C2/C3/A）逐口功率、端口开关，SSE 推送实时更新、轮询兜底
 - **充电器一键登录**：复用米家扫码会话自动提取蓝牙凭据写入内置服务端，免去二次扫码（设置 → 应用功能）
@@ -52,6 +53,7 @@
 - **充电会话历史**：会话列表筛选与翻页、单会话点级曲线（五项指标 + 快充协议标注）与 CSV 导出
 - **能量统计**：按端口/每小时/快充协议三维度统计图表
 - **托盘悬停弹窗**：托盘图标悬停即显示四口功率与总功率
+- **写路径竞态防护**：端口开关/会话列表/托盘音量等异步链路全面引入请求序号与 pending 守卫，飞行中切换设备/筛选不会串台或回跳
 
 ## 🚀 快速开始
 
@@ -96,7 +98,7 @@ python -m venv .venv
 
 > [!TIP]
 > 首次启动会弹出扫码窗口；之后凭据长期复用，失效时再次扫码即可。
-> 充电器功能的开发态联调需另行 clone [cuktech-ble-server](https://github.com/kairui1108/cuktech-ble-server) 到同级目录，详见其仓库说明。
+> 充电器功能的开发态联调需另行 clone [cuktech-ble-server](https://github.com/Arimayuki03/cuktech-ble-server) 到同级目录，详见其仓库说明。
 
 ## 🧱 构建可执行文件
 
@@ -279,7 +281,7 @@ LICENSE                         # GPL-3.0 许可证
 | [huanyuejue/MiHome-Windows](https://github.com/huanyuejue/MiHome-Windows) | GPL-3.0 | 本项目 fork 的上游 |
 | [mijia-api](https://github.com/Do1e/mijia-api) | GPL-3.0 | 米家 API 封装 |
 | [PySide6-SiliconUI](https://github.com/H1DDENADM1N/PySide6-SiliconUI) | GPL-3.0 | UI 组件库（已内置至 `app/siui/`） |
-| [kairui1108/cuktech-ble-server](https://github.com/kairui1108/cuktech-ble-server) | MIT | CUKTECH 充电器 BLE 服务端（内置为扩展组件） |
+| [kairui1108/cuktech-ble-server](https://github.com/kairui1108/cuktech-ble-server) | MIT | CUKTECH 充电器 BLE 服务端（内置为扩展组件；本仓库另有[维护 fork](https://github.com/Arimayuki03/cuktech-ble-server)） |
 
 对本项目代码的使用、修改与分发同样须遵循 GPL-3.0。
 
