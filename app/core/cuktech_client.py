@@ -103,13 +103,18 @@ class CuktechClient:
 
     def __init__(self, base_url: str = "http://127.0.0.1:8199",
                  timeout: float = 4.0,
-                 command_timeout: float = 12.0) -> None:
+                 command_timeout: float = 25.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
-        # BLE 命令超时：服务端 command_timeout=10s（config.py），命令在
-        # 10s 后才返回 200+ok:false("command timeout")。客户端若沿用 4s
-        # 读超时，慢命令会被本地先行判死而服务端仍执行成功——UI 报失败、
-        # 设备实际已生效。放宽到 12s 覆盖服务端上限。
+        # BLE 命令超时：服务端 command_timeout=20s（config.py），端口开关
+        # 带一轮自动重试（两轮 GET+SET，正常 ≈8.3s、慢链路最多 20s）才
+        # 返回 200+ok:false。客户端若短于服务端，慢命令会被本地先行判死
+        # 而服务端/设备仍执行成功——UI 报失败、设备实际已生效。urlopen 的
+        # timeout 含建连与读响应开销，故取服务端上限 + 余量 = 25s。
+        #
+        # 跨模块契约：UI 侧任何「写命令在途」的兜底计时（pending 遮蔽释放
+        # 等）都必须 ≥ 本值，否则兜底会在命令仍在途时解除、被随后到达的
+        # SSE 旧帧把开关视觉回跳（用户以为失败再点一次造成反向切换）。
         self._command_timeout = command_timeout
 
     @property
