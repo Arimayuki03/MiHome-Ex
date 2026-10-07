@@ -220,9 +220,16 @@ Write-Host ("`n编译耗时 {0:00}:{1:00}" -f [int]$Elapsed.TotalMinutes, $Elaps
 # 独立 Nuitka standalone，输出 dist\ble-server\。可选降级：编译失败
 # 仅警告不阻塞主应用（BleServerManager 按组件缺失静默不工作）。
 $ServerRoot = Join-Path $Root "..\cuktech-ble-server"
+# CI 上服务端仓库是 fresh checkout，没有 .venv——此时退回主 venv 的
+# python（依赖已由 CI 步骤装好），否则扩展组件会被整段跳过、产出的
+# 安装包不带 ble-server（实测 v0.4.4 即如此）
 $ServerVenvPy = Join-Path $ServerRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $ServerVenvPy)) { $ServerVenvPy = $Python }
 $ServerExe = "dist\ble-server\CuktechBleServer.exe"
-if (-not (Test-Path $ServerExe) -and (Test-Path $ServerVenvPy)) {
+if (-not (Test-Path $ServerExe)) {
+    if (-not (Test-Path (Join-Path $ServerRoot "ha_server.py"))) {
+        Write-Host "`n[WARN] 未找到 BLE 服务端源码（$ServerRoot），跳过扩展组件构建。" -ForegroundColor Yellow
+    } else {
     Write-Host "`nBuilding BLE server extension (cuktech-ble-server)..." -ForegroundColor Cyan
     # 不用 2>&1 重定向：脚本级 $ErrorActionPreference=Stop 会把
     # stderr 文本升级为终止错误（NativeCommandError 假警报）
@@ -230,6 +237,12 @@ if (-not (Test-Path $ServerExe) -and (Test-Path $ServerVenvPy)) {
     $TempServerBuild = Join-Path $env:TEMP "mihome-server-build"
     if (Test-Path $TempServerBuild) { Remove-Item $TempServerBuild -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $TempServerBuild | Out-Null
+    # CI 上服务端仓库是 fresh checkout，config.yaml 被 .gitignore
+    # 排除（含真实凭据，不入仓库）——缺失时回退模板，保证安装包
+    # 始终带一份可用的 config.default.yaml
+    $ServerCfg = Join-Path $ServerRoot "config.yaml"
+    if (-not (Test-Path $ServerCfg)) { $ServerCfg = Join-Path $ServerRoot "config.yaml.example" }
+
     $ServerNuitkaArgs = @(
         "ha_server.py"
         "--standalone"
@@ -250,7 +263,7 @@ if (-not (Test-Path $ServerExe) -and (Test-Path $ServerVenvPy)) {
         "--include-module=winrt.windows.storage.streams"
         # 服务端 web 静态前端（内存预读 + FileResponse 兜底，必须随包）
         "--include-data-dir=web=web/"
-        "--include-data-files=config.yaml=config.default.yaml"
+        "--include-data-files=$ServerCfg=config.default.yaml"
         "--nofollow-import-to=tkinter,unittest,pytest,docker,systemd"
         "--jobs=4"
         "--assume-yes-for-downloads"
@@ -304,10 +317,9 @@ if (-not (Test-Path $ServerExe) -and (Test-Path $ServerVenvPy)) {
     } else {
         Write-Host "[WARN] BLE 服务端扩展编译失败，安装包将不含该组件（主应用功能不受影响，充电器卡片按组件缺失语义缺席）。" -ForegroundColor Yellow
     }
-} elseif (Test-Path $ServerExe) {
-    Write-Host "[OK] BLE server extension already built" -ForegroundColor Green
+    }
 } else {
-    Write-Host "[WARN] 未找到服务端 venv（$ServerVenvPy），跳过 BLE 服务端扩展编译。" -ForegroundColor Yellow
+    Write-Host "[OK] BLE server extension already built" -ForegroundColor Green
 }
 
 $Exe = "dist\MiHome-Ex.exe"

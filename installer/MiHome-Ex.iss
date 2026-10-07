@@ -6,7 +6,7 @@
 ; 再用 ISCC 编译本脚本得到 installer\Output\MiHome-Ex-setup-<版本>.exe
 
 #define MyAppName "MiHome-Ex"
-#define MyAppVersion ReadIni(SourcePath + "\version.ini", "version", "value", "0.4.4")
+#define MyAppVersion ReadIni(SourcePath + "\version.ini", "version", "value", "0.4.5")
 #define MyAppPublisher "MiHome-Ex contributors"
 #define MyAppExeName "MiHome-Ex.exe"
 
@@ -53,6 +53,14 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; \
 Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; \
     GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 6.1
 
+; 扩展组件（内置 BLE 服务端）：上层主条目用 ignoreversion，已存在同名
+; 文件会被直接跳过、不覆盖——实测升级安装后 ble-server\ 下仍是旧版 exe
+; 与旧 config.default.yaml（v0.4.4 装完跑的还是 v1.1.1 服务端，端口开关
+; 修复因此不生效）。这里在安装前先清掉整个旧组件目录（[InstallDelete]
+; 早于 [Files] 执行），再由下面那条不带 ignoreversion 的条目重新写入。
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\ble-server"
+
 [Files]
 ; standalone 目录的全部运行时文件（build.ps1 已把 run.dist 摊平到 dist\）。
 ; Excludes 排除 MSVC 运行库 DLL：360 等安全软件对"新写入的运行库 DLL"
@@ -61,6 +69,10 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; \
 ; 多数系统开箱即有）。
 Source: "..\dist\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "msvcp140.dll,msvcp140_1.dll,msvcp140_2.dll,concrt140.dll,vcamp140.dll,vccorlib140.dll,vcomp140.dll,vcruntime140.dll,vcruntime140_1.dll,msvcp140_codecvt_ids.dll"
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion; Check: FileExists(ExpandConstant('{src}\LICENSE'))
+
+; 扩展组件单独一条且不带 ignoreversion：按版本/时间戳规则覆盖，
+; 配合上面的 [InstallDelete] 确保始终拿到与主程序匹配的版本。
+Source: "..\dist\ble-server\*"; DestDir: "{app}\ble-server"; Flags: recursesubdirs createallsubdirs; Excludes: "msvcp140.dll,msvcp140_1.dll,msvcp140_2.dll,concrt140.dll,vcamp140.dll,vccorlib140.dll,vcomp140.dll,vcruntime140.dll,vcruntime140_1.dll,msvcp140_codecvt_ids.dll"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -88,6 +100,9 @@ begin
   // 内置 BLE 服务端扩展组件同样先结束，避免覆盖安装文件占用
   Exec(ExpandConstant('{cmd}'), ExpandConstant('/C taskkill /IM {#MyAppExeName} /F >nul 2>&1'), '', SW_HIDE, True, ResultCode);
   Exec(ExpandConstant('{cmd}'), '/C taskkill /IM CuktechBleServer.exe /F >nul 2>&1', '', SW_HIDE, True, ResultCode);
+  // taskkill 返回后文件句柄可能尚未完全释放，给系统一点时间再让
+  // [InstallDelete] 删除 ble-server\ 目录（删不掉会残留旧版服务端）
+  Sleep(1500);
   Result := True;
 end;
 
