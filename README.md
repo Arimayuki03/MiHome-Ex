@@ -73,6 +73,36 @@
 
 > 安装包/绿色版均内置 BLE 服务端扩展组件；不装也能用，充电器功能按组件缺失静默缺席。
 
+### ❓ 杀毒软件报毒（误报说明）
+
+程序使用 **[Nuitka](https://nuitka.net/)** 将 Python 源码编译为原生可执行文件（详见[构建](#-构建可执行文件)），且**尚未做代码签名**。这类未签名的编译型 exe 常被 360、火绒、Windows Defender 等的机器学习引擎误判（如 360 的 `HEUR/QVM....Malware.Gen`），属已知误报模式。
+
+> [!TIP]
+> **自行验证文件是否被篡改**：每个 Release 都附 `SHA256SUMS.txt`，下载后执行
+> `Get-FileHash <文件路径> -Algorithm SHA256` 比对即可；官方构建的哈希与清单一致。
+> 也可将文件上传 [VirusTotal](https://www.virustotal.com/) 查看——本项目如果被少量引擎（尤其 QVM/HEUR 类启发式）命中而主流引擎（Defender、卡巴、ESET 等）全绿，即为典型误报。
+
+若信任来源、希望继续使用，将安装目录加入杀软**信任区/白名单**即可：
+
+<details>
+<summary>360 安全卫士操作路径</summary>
+
+1. 弹窗时选择「信任该文件」；若已自动隔离，先到「木马查杀 → 恢复区」恢复并勾选「信任」
+2. 或手动添加：设置 → 安全操作中心 → 信任区 → 添加目录 → 选择安装目录（默认 `C:\Users\<用户名>\AppData\Local\Programs\MiHome-Ex\`）
+3. 添加后重新运行程序
+
+</details>
+
+<details>
+<summary>Windows Defender 操作路径</summary>
+
+1. Windows 安全中心 → 病毒和威胁防护 → 管理设置 → 排除项 → 添加排除项
+2. 选择「文件夹」→ 添加安装目录（或「进程」→ 添加 `MiHome-Ex.exe`）
+
+</details>
+
+> 长期方案是购买代码签名证书（EV 证书可直接消除大部分信誉类误报），在项目获得赞助前暂无计划；如报毒持续困扰，欢迎在 [Issues](https://github.com/Arimayuki03/MiHome-Ex/issues) 反馈你使用的杀软与判定名，便于针对性提交误报申诉。
+
 ### 方式二：源码运行
 
 要求 Python >= 3.10。

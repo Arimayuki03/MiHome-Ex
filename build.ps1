@@ -168,6 +168,11 @@ $NuitkaArgs = @(
     "--product-name=MiHome-Ex"
     "--product-version=$AppVersion"
     "--file-version=$AppVersion"
+    # 公司名与文件描述必须补全：空 CompanyName / 空 FileDescription 的
+    # 未签名 exe 是 360 QVM 等机器学习引擎的高权重误报特征
+    # （HEUR/QVM....Malware.Gen），signed 之前先把可自报的信息补齐
+    "--company-name=MiHome-Ex contributors"
+    "--file-description=MiHome-Ex 米家设备 Windows 桌面控制端"
     "--copyright=Copyright (C) 2026 MiHome-Ex contributors"
 )
 
@@ -252,7 +257,10 @@ if (-not (Test-Path $ServerExe) -and (Test-Path $ServerVenvPy)) {
         "--output-dir=$TempServerBuild"
         "--output-filename=CuktechBleServer.exe"
         "--product-name=CuktechBleServer"
-        "--product-version=1.1.1"
+        # 服务端版本与 bleed 服务端仓库 pyproject 同步（当前 1.1.4）
+        "--product-version=1.1.4"
+        "--company-name=MiHome-Ex contributors"
+        "--file-description=CUKTECH 充电器 BLE 服务端（MiHome-Ex 扩展组件）"
         "--copyright=MIT (C) kairui1108/cuktech-ble-server contributors"
     )
     Push-Location $ServerRoot
