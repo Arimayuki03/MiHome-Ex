@@ -322,6 +322,13 @@ if (-not (Test-Path $ServerExe)) {
         Write-Host "BLE server extension built: $ServerExe" -ForegroundColor Green
     } else {
         Write-Host "[WARN] BLE 服务端扩展编译失败，安装包将不含该组件（主应用功能不受影响，充电器卡片按组件缺失语义缺席）。" -ForegroundColor Yellow
+        # nuitka 的输出重定向到了日志文件，不回显的话 CI 上只能看到
+        # "编译失败" 四个字、无从诊断——回显尾部若干行
+        if (Test-Path $ServerLog) {
+            Write-Host "---- nuitka 日志尾部 ----" -ForegroundColor DarkGray
+            Get-Content $ServerLog -Tail 25
+            Write-Host "------------------------" -ForegroundColor DarkGray
+        }
     }
     }
 } else {

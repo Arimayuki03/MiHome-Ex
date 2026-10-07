@@ -115,6 +115,13 @@ jobs:
           pip install -e .
           pip install nuitka ordered-set zstandard
 
+      # 内置 BLE 服务端扩展组件在 CI 上没有自己的 .venv（仓库 fresh
+      # checkout），build.ps1 会退回主 venv 编译它——故服务端依赖必须
+      # 也装进主 venv，否则 nuitka 编译 ha_server.py 会立刻因缺
+      # aiohttp/bleak 等失败，产出的安装包不带 ble-server 组件
+      - name: 安装 BLE 服务端扩展依赖
+        run: pip install -r "${{ github.workspace }}\cuktech-ble-server\requirements.txt"
+
       - name: 构建（Nuitka 主程序 + BLE 服务端扩展）
         shell: pwsh
         run: .\build.ps1
