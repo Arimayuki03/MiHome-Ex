@@ -302,9 +302,11 @@ if (-not (Test-Path $ServerExe)) {
         # 各自往 winrt/windows/... 放纯 Python shim），Nuitka 对这类包的
         # 处理不完整：dist 里缺 windows/ 下的 py shim，也缺根级的
         # _winrt_windows_foundation_collections.pyd（广播包解析必需，
-        # 缺了它 BLE 扫描回调全炸、永远发现不了充电器）。编译后按 venv
-        # 清单把 winrt 根级 pyd 与 windows/ 树整体补齐。
-        $WinrtVenv = Join-Path $ServerRoot ".venv\Lib\site-packages\winrt"
+        # 缺了它 BLE 扫描回调全炸、永远发现不了充电器）。编译后按实际
+        # 编译解释器（$ServerVenvPy——CI 上是主 venv，本地是服务端
+        # .venv）的 site-packages 清单把 winrt 根级 pyd 与 windows/ 树补齐。
+        $WinrtSitePackages = (& $ServerVenvPy -c "import sysconfig; print(sysconfig.get_paths()['purelib'])").Trim()
+        $WinrtVenv = Join-Path $WinrtSitePackages "winrt"
         $WinrtDist = Join-Path $TempServerBuild "ha_server.dist\winrt"
         Get-ChildItem $WinrtVenv -Filter "_winrt*.pyd" | ForEach-Object {
             $dst = Join-Path $WinrtDist $_.Name
@@ -339,6 +341,12 @@ $Exe = "dist\MiHome-Ex.exe"
 if (Test-Path $Exe) {
     $Size = [math]::Round((Get-Item $Exe).Length / 1MB, 1)
     Write-Host "`n构建成功! $Exe ($Size MB)" -ForegroundColor Green
+    # 主程序产物在即视为成功，显式归零：扩展组件编译失败只是警告降级
+    # （设计如此），但失败分支里最后一条原生命令的 $LASTEXITCODE 会残留
+    # 1——GitHub Actions 的 pwsh 步骤按它当退出码，v0.4.5 实测整个 job
+    # 误报失败
+    exit 0
 } else {
     Write-Host "[ERROR] 找不到输出文件" -ForegroundColor Red
+    exit 1
 }
