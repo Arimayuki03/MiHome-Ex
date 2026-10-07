@@ -219,7 +219,13 @@ Write-Host ("`n编译耗时 {0:00}:{1:00}" -f [int]$Elapsed.TotalMinutes, $Elaps
 # ============================================================
 # 独立 Nuitka standalone，输出 dist\ble-server\。可选降级：编译失败
 # 仅警告不阻塞主应用（BleServerManager 按组件缺失静默不工作）。
+# 开发态在同级目录 ..\cuktech-ble-server；CI 的 checkout 落在工作区内部
+# <workspace>\cuktech-ble-server（ci.yml 的 path:），两个位置都要认，
+# 否则扩展组件被当作"源码缺失"跳过、安装包不带 ble-server
 $ServerRoot = Join-Path $Root "..\cuktech-ble-server"
+if (-not (Test-Path (Join-Path $ServerRoot "ha_server.py"))) {
+    $ServerRoot = Join-Path $Root "cuktech-ble-server"
+}
 # CI 上服务端仓库是 fresh checkout，没有 .venv——此时退回主 venv 的
 # python（依赖已由 CI 步骤装好），否则扩展组件会被整段跳过、产出的
 # 安装包不带 ble-server（实测 v0.4.4 即如此）

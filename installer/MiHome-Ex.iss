@@ -72,7 +72,10 @@ Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion; Check: FileExists(Exp
 
 ; 扩展组件单独一条且不带 ignoreversion：按版本/时间戳规则覆盖，
 ; 配合上面的 [InstallDelete] 确保始终拿到与主程序匹配的版本。
-Source: "..\dist\ble-server\*"; DestDir: "{app}\ble-server"; Flags: recursesubdirs createallsubdirs; Excludes: "msvcp140.dll,msvcp140_1.dll,msvcp140_2.dll,concrt140.dll,vcamp140.dll,vccorlib140.dll,vcomp140.dll,vcruntime140.dll,vcruntime140_1.dll,msvcp140_codecvt_ids.dll"
+; Check 守卫：扩展组件编译失败时 dist\ble-server\ 不存在，硬引用会让
+; Inno 直接 "No files found" 编译中止、连主程序安装包都出不来——降级为
+; 不带该组件（BleServerManager 按组件缺失静默不工作）。
+Source: "..\dist\ble-server\*"; DestDir: "{app}\ble-server"; Flags: recursesubdirs createallsubdirs; Excludes: "msvcp140.dll,msvcp140_1.dll,msvcp140_2.dll,concrt140.dll,vcamp140.dll,vccorlib140.dll,vcomp140.dll,vcruntime140.dll,vcruntime140_1.dll,msvcp140_codecvt_ids.dll"; Check: DirExists(ExpandConstant('{src}\..\dist\ble-server'))
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
