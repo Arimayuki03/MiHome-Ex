@@ -13,7 +13,10 @@ authors = [{ name = "Arimayuki03 and MiHome-Ex contributors (based on MiHome-Win
 dependencies = [
     # 上游锁死在 4.x：大版本升级可能破坏适配层，必须人工验证后放行
     "mijiaAPI>=4.2,<5",
-    "PySide6>=6.7",
+    # 上限钉 6.11：6.12.0 发布后 CI 3.12 job 的 theme_script 静默崩溃
+    # （退出码 1、无 Traceback，faulthandler 亦无栈），本地 6.11.2 全绿；
+    # 适配 6.12 后再人工放行
+    "PySide6>=6.7,<6.12",
     # 登录对话框渲染二维码用；虽是 mijiaAPI 的传递依赖，仍显式声明防止被动移除
     "qrcode>=8",
     # Material Design 图标，用于所有 UI 图标渲染
