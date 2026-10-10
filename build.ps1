@@ -276,8 +276,8 @@ if (-not (Test-Path $ServerExe)) {
         "--output-dir=$TempServerBuild"
         "--output-filename=CuktechBleServer.exe"
         "--product-name=CuktechBleServer"
-        # 服务端版本与 bleed 服务端仓库 pyproject 同步（当前 1.1.4）
-        "--product-version=1.1.4"
+        # 服务端版本与 bleed 服务端仓库 pyproject 同步（当前 1.1.5）
+        "--product-version=1.1.5"
         "--company-name=MiHome-Ex contributors"
         "--file-description=CUKTECH 充电器 BLE 服务端（MiHome-Ex 扩展组件）"
         "--copyright=MIT (C) kairui1108/cuktech-ble-server contributors"
