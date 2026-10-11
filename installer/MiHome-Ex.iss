@@ -71,6 +71,11 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; \
 ; 修复因此不生效）。这里在安装前先清掉整个旧组件目录（[InstallDelete]
 ; 早于 [Files] 执行），再由下面那条不带 ignoreversion 的条目重新写入。
 ; 客户端版也保留这条：从完整版升级到客户端版时清掉旧组件目录。
+; v0.5.0 实测升级安装闪退（Nuitka segfault）：主程序条目 ignoreversion
+; 会跳过同名旧文件——旧版残留的 python312.dll 等运行文件不被新版覆盖，
+; 新编译 pyd 加载旧 DLL 即崩。[InstallDelete] 无法按"仅旧散落文件"精确
+; 清理，改为在 [Code] InitializeSetup 里整目录重建（见 appData 保留说明：
+; {app} 只含程序文件，用户数据在 %LOCALAPPDATA%\MiHome-Ex\，不受影响）。
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\ble-server"
 
@@ -114,14 +119,35 @@ Type: filesandordirs; Name: "{app}\*.tmp"
 function InitializeSetup(): Boolean;
 var
   ResultCode: Integer;
+  AppDir: string;
+  StaleDir: string;
 begin
   // 静默结束正在运行的实例（忽略失败：可能本就没在运行）；
   // 内置 BLE 服务端扩展组件同样先结束，避免覆盖安装文件占用
   Exec(ExpandConstant('{cmd}'), ExpandConstant('/C taskkill /IM {#MyAppExeName} /F >nul 2>&1'), '', SW_HIDE, True, ResultCode);
   Exec(ExpandConstant('{cmd}'), '/C taskkill /IM CuktechBleServer.exe /F >nul 2>&1', '', SW_HIDE, True, ResultCode);
-  // taskkill 返回后文件句柄可能尚未完全释放，给系统一点时间再让
-  // [InstallDelete] 删除 ble-server\ 目录（删不掉会残留旧版服务端）
+  // taskkill 返回后文件句柄可能尚未完全释放，给系统一点时间
   Sleep(1500);
+  // v0.5.0 实测：升级安装残留旧散落文件（ignoreversion 跳过同名、
+  // Excludes 排除的运行库永远不更新），新编译 pyd 加载旧 python312.dll
+  // 直接 segfault。{app} 只放程序文件（用户数据在 %LOCALAPPDATA%），
+  // 升级路径下整目录重建最干净：改名旧目录 → 新目录由 [Files] 重新写入
+  AppDir := ExpandConstant('{app}');
+  if DirExists(AppDir) then begin
+    // 整目录让位：改名旧目录给 [Files] 腾位，随后异步删除。
+    // 固定后缀即可：InitializeSetup 每次安装只跑一次，同名 .old 残留
+    // （上次安装中断）由 rd /s /q 先清掉再改名
+    Exec(ExpandConstant('{cmd}'),
+      ExpandConstant('/C rd /s /q "' + AppDir + '.old" >nul 2>&1'),
+      '', SW_HIDE, True, ResultCode);
+    StaleDir := AppDir + '.old';
+    if RenameFile(AppDir, StaleDir) then begin
+      // 留给 [Files] 写入；旧目录延迟删除（防句柄未释放删失败卡安装）
+      Exec(ExpandConstant('{cmd}'),
+        ExpandConstant('/C timeout /t 3 >nul & rd /s /q "' + StaleDir + '"'),
+        '', SW_HIDE, True, ResultCode);
+    end;
+  end;
   Result := True;
 end;
 
