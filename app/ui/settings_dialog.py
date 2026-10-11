@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -323,6 +324,29 @@ class SettingsDialog(OverlayDialog):
         _sync_switch(self._ble_toggle)
         ble_row.addWidget(self._ble_toggle)
 
+        # ── 充电器远程后端地址（分离式部署） ──
+        # 填写后主程序不再拉起内置 BLE 组件，充电器数据全部打向该地址；
+        # 留空则按本机模式拉起内置组件。用于后端跑在旁路由/NAS 等常驻
+        # 主机上的场景（电脑关机充电器数据与 HA 自动化不中断）。
+        self._ble_url_item, self._ble_url_label, self._ble_url_desc, url_row = \
+            self._make_item(
+                "充电器远程后端",
+                "填充电器后端地址（如 http://192.168.6.2:8199）即切换为"
+                "分离式部署：本软件只做客户端，不再随程序启动内置服务，"
+                "电脑关机后充电器数据与 Home Assistant 自动化不中断。"
+                "留空则使用本机内置服务。改后需重启软件生效")
+        self._ble_url_edit = QLineEdit()
+        self._ble_url_edit.setPlaceholderText("http://192.168.6.2:8199")
+        self._ble_url_edit.setText(settings_store.get_ble_server_url())
+        self._ble_url_edit.setClearButtonEnabled(True)
+        self._ble_url_edit.setFixedWidth(220)
+        self._ble_url_edit.textChanged.connect(self._on_ble_url_edited)
+        url_row.addWidget(self._ble_url_edit)
+        # 远程模式下「内置充电器服务」开关无意义：置灰（拉起策略由地址决定）
+        self._ble_url_item.setVisible(bool(self._ble_server_original) or
+                                      bool(settings_store.get_ble_server_url()))
+        self._on_ble_url_edited(settings_store.get_ble_server_url())
+
         # ── 充电器一键登录（M5：复用米家会话提取凭据写入服务端） ──
         self._cred_item, self._cred_label, self._cred_desc, cred_row = self._make_item(
             "充电器一键登录",
@@ -556,6 +580,23 @@ class SettingsDialog(OverlayDialog):
         combo.setCurrentText(self._scale_pct_text(value))
         combo.blockSignals(False)
 
+    def _on_ble_url_edited(self, text: str) -> None:
+        """远程地址编辑联动：远程模式置灰「内置充电器服务」开关。
+
+        远程模式下拉起策略由地址决定（不拉内置组件），父开关保持显示
+        但失去作用；清空地址则恢复本机模式的开关语义。
+        """
+        remote = bool(text.strip())
+        self._ble_toggle.setEnabled(not remote)
+        if remote:
+            self._ble_desc.setText(
+                "已配置远程后端（分离式部署），本开关不再生效；"
+                "清空「充电器远程后端」地址后可重新随本软件启停内置服务")
+        else:
+            self._ble_desc.setText(
+                "随本软件自动启动本地充电器服务（cuktech-ble-server），"
+                "为本软件提供充电器实时数据；关闭后需自行运行该服务")
+
     def _save_and_accept(self) -> None:
         settings_store.set_minimize_to_tray(self._tray_toggle.isChecked())
         # 内置充电器服务：落盘；开关有变化时发即时启停信号（不要求重启）
@@ -563,6 +604,12 @@ class SettingsDialog(OverlayDialog):
         settings_store.set_ble_server_enabled(ble_enabled)
         if ble_enabled != self._ble_server_original:
             self.ble_server_setting_changed.emit(ble_enabled)
+        # 远程后端地址：落盘；变化需重启（SSE/客户端在启动时取址）
+        new_url = self._ble_url_edit.text().strip()
+        if new_url and "://" not in new_url:
+            new_url = f"http://{new_url}"
+        self._url_changed = new_url != settings_store.get_ble_server_url()
+        settings_store.set_ble_server_url(new_url)
         # 子开关仅在父开关开启时有效，关闭时强制写入 False
         if self._tray_toggle.isChecked():
             settings_store.set_start_minimized(self._start_min_toggle.isChecked())

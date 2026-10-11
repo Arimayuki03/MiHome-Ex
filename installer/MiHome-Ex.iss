@@ -4,17 +4,29 @@
 ;
 ; 用法：先运行 build.ps1 生成 dist\MiHome-Ex.exe 及其运行时文件，
 ; 再用 ISCC 编译本脚本得到 installer\Output\MiHome-Ex-setup-<版本>.exe
+;
+; 双版本：build.ps1 -ClientOnly 产出不含 ble-server\ 的 dist 后，用
+;   ISCC /DClientOnly installer\MiHome-Ex.iss
+; 编译客户端版安装包（无内置充电器服务，分离式部署专用；产物文件名
+; 带 -client 后缀，AppId 独立，可与完整版并存或独立安装）。
 
 #define MyAppName "MiHome-Ex"
 #define MyAppVersion ReadIni(SourcePath + "\version.ini", "version", "value", "0.4.5")
 #define MyAppPublisher "MiHome-Ex contributors"
 #define MyAppExeName "MiHome-Ex.exe"
+#ifdef ClientOnly
+#define MyAppTitle "MiHome-Ex 客户端版"
+#define OutputSuffix "-client"
+#else
+#define MyAppTitle "MiHome-Ex"
+#define OutputSuffix ""
+#endif
 
 [Setup]
 AppId={{7E5F8C2A-9B1D-4A6E-8C3F-2D4A5B6C7D8E}
-AppName={#MyAppName}
+AppName={#MyAppTitle}
 AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion}
+AppVerName={#MyAppTitle} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL=https://github.com/Arimayuki03/MiHome-Ex
 AppSupportURL=https://github.com/Arimayuki03/MiHome-Ex
@@ -22,7 +34,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 OutputDir=Output
-OutputBaseFilename=MiHome-Ex-setup-{#MyAppVersion}
+OutputBaseFilename=MiHome-Ex-setup-{#MyAppVersion}{#OutputSuffix}
 ; 版本资源信息：资源管理器里显示版本号与图标
 SetupIconFile=..\app\ui\icon.ico
 ; 压缩：standalone 目录约几百 MB，lzma2 高压缩显著减小安装包
@@ -58,6 +70,7 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; \
 ; 与旧 config.default.yaml（v0.4.4 装完跑的还是 v1.1.1 服务端，端口开关
 ; 修复因此不生效）。这里在安装前先清掉整个旧组件目录（[InstallDelete]
 ; 早于 [Files] 执行），再由下面那条不带 ignoreversion 的条目重新写入。
+; 客户端版也保留这条：从完整版升级到客户端版时清掉旧组件目录。
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\ble-server"
 
@@ -75,7 +88,10 @@ Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion; Check: FileExists(Exp
 ; Check 守卫：扩展组件编译失败时 dist\ble-server\ 不存在，硬引用会让
 ; Inno 直接 "No files found" 编译中止、连主程序安装包都出不来——降级为
 ; 不带该组件（BleServerManager 按组件缺失静默不工作）。
+; 客户端版（/DClientOnly）按定义排除该条目。
+#ifndef ClientOnly
 Source: "..\dist\ble-server\*"; DestDir: "{app}\ble-server"; Flags: recursesubdirs createallsubdirs; Excludes: "msvcp140.dll,msvcp140_1.dll,msvcp140_2.dll,concrt140.dll,vcamp140.dll,vccorlib140.dll,vcomp140.dll,vcruntime140.dll,vcruntime140_1.dll,msvcp140_codecvt_ids.dll"; Check: DirExists(ExpandConstant('{src}\..\dist\ble-server'))
+#endif
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

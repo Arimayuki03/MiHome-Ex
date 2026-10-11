@@ -98,10 +98,14 @@ _HTBOTTOMRIGHT = 17
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self._service = MijiaService()
+        # 充电器数据源：分离式部署（设置里填了远程地址）时指向远程，
+        # 否则本机默认 8199；拉起策略由 BleServerManager 按同一设置决定
+        from app.core.ble_server_manager import get_backend_url
+        self._service = MijiaService(cuktech_base_url=get_backend_url())
         self._jobs = JobExecutor(self)
         # 内置 BLE 服务端（扩展组件）：随主程序启停，充电器数据的本地源。
-        # 组件缺失（未打包/无服务端 venv）时管理器静默降级
+        # 组件缺失（未打包/无服务端 venv）时管理器静默降级；远程模式下
+        # 不拉起（避免与远程实例争抢充电器 BLE 连接）
         from app.core.ble_server_manager import BleServerManager
         self._ble_server_mgr = BleServerManager(self)
 
@@ -784,10 +788,24 @@ class MainWindow(QMainWindow):
         dlg.ble_server_setting_changed.connect(self._on_ble_server_setting_changed)
         dlg.exec()
         scale_changed = getattr(dlg, "_scale_changed", False)
+        # 充电器远程后端地址改动：数据源在启动时取址（HTTP 客户端与 SSE
+        # 流），且拉起策略随之变化，需重启生效
+        url_changed = getattr(dlg, "_url_changed", False)
         dlg.deleteLater()
         self._settings_dialog = None
         # 界面缩放改动需重启应用生效：提供一键重启（常驻托盘时关窗口
         # 只是隐藏到托盘、进程仍在，仅提示会让用户以为没生效）
+        if url_changed and not scale_changed:
+            from app.ui.restart import restart_app
+            ret = QMessageBox.question(
+                self, "充电器后端已切换",
+                "充电器后端地址已修改，需重启应用后生效。\n是否立即重启？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes)
+            if ret == QMessageBox.Yes:
+                self._force_quit = True
+                restart_app()
+                self.close()
         if scale_changed:
             from app.ui.restart import restart_app
             ret = QMessageBox.question(

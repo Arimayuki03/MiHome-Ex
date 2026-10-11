@@ -27,6 +27,7 @@ _DEFAULTS: dict = {
     "tray_columns": 2,  # 托盘快捷窗口卡片列数：1 或 2
     "check_update_enabled": True,  # 启动时自动检查 GitHub 新版本
     "ble_server_enabled": True,  # 随主程序启停内置 BLE 服务端（扩展组件）
+    "ble_server_url": "",  # 充电器后端地址；空=本机模式（拉起内置组件），否则远程 URL（分离式部署，不拉内置组件）
 }
 
 
@@ -137,6 +138,21 @@ def get_ble_server_enabled() -> bool:
 def set_ble_server_enabled(value: bool) -> None:
     raw = _read_raw()
     raw["ble_server_enabled"] = bool(value)
+    _write_raw(raw)
+
+
+def get_ble_server_url() -> str:
+    """充电器后端地址；空串=本机模式（拉起内置组件），否则远程 URL。
+
+    远程模式下主程序不拉起内置 BLE 组件（避免与远程实例争抢充电器
+    蓝牙连接），数据源全部指向远程地址。
+    """
+    return str(_read_raw().get("ble_server_url", "")).strip()
+
+
+def set_ble_server_url(value: str) -> None:
+    raw = _read_raw()
+    raw["ble_server_url"] = str(value).strip()
     _write_raw(raw)
 
 

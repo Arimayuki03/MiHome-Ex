@@ -9,9 +9,16 @@
 .EXAMPLE
     .\build.ps1
     .\build.ps1 -Clean
+    .\build.ps1 -ClientOnly   # 客户端版：不含内置 BLE 服务端组件（分离式部署用）
 #>
 
-param([switch]$Clean)
+param(
+    [switch]$Clean,
+    # 客户端版：跳过 BLE 服务端扩展组件构建，dist\ 不含 ble-server\。
+    # 面向「后端跑在旁路由/NAS」的分离式部署用户：安装体积更小，
+    # 设置里填充电器远程后端地址即可使用充电器面板
+    [switch]$ClientOnly
+)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -219,20 +226,26 @@ Write-Host ("`n编译耗时 {0:00}:{1:00}" -f [int]$Elapsed.TotalMinutes, $Elaps
 # ============================================================
 # 独立 Nuitka standalone，输出 dist\ble-server\。可选降级：编译失败
 # 仅警告不阻塞主应用（BleServerManager 按组件缺失静默不工作）。
-# 开发态在同级目录 ..\cuktech-ble-server；CI 的 checkout 落在工作区内部
+# -ClientOnly 时整段跳过（客户端版不含该组件）。开发态在同级目录
+# ..\cuktech-ble-server；CI 的 checkout 落在工作区内部
 # <workspace>\cuktech-ble-server（ci.yml 的 path:），两个位置都要认，
 # 否则扩展组件被当作"源码缺失"跳过、安装包不带 ble-server
 $ServerRoot = Join-Path $Root "..\cuktech-ble-server"
 if (-not (Test-Path (Join-Path $ServerRoot "ha_server.py"))) {
     $ServerRoot = Join-Path $Root "cuktech-ble-server"
 }
-# CI 上服务端仓库是 fresh checkout，没有 .venv——此时退回主 venv 的
-# python（依赖已由 CI 步骤装好），否则扩展组件会被整段跳过、产出的
-# 安装包不带 ble-server（实测 v0.4.4 即如此）
 $ServerVenvPy = Join-Path $ServerRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $ServerVenvPy)) { $ServerVenvPy = $Python }
 $ServerExe = "dist\ble-server\CuktechBleServer.exe"
-if (-not (Test-Path $ServerExe)) {
+if ($ClientOnly) {
+    # 客户端版：确保产物不含旧一轮构建残留的 ble-server\（安装包
+    # iss 按 DirExists 条件打包，残留会让"客户端版"悄悄带上组件）
+    if (Test-Path "dist\ble-server") {
+        Remove-Item "dist\ble-server" -Recurse -Force
+        Write-Host "[ClientOnly] 已移除残留的 dist\ble-server\" -ForegroundColor Yellow
+    }
+    Write-Host "`n[ClientOnly] 客户端版构建：跳过 BLE 服务端扩展组件。" -ForegroundColor Cyan
+} elseif (-not (Test-Path $ServerExe)) {
     if (-not (Test-Path (Join-Path $ServerRoot "ha_server.py"))) {
         Write-Host "`n[WARN] 未找到 BLE 服务端源码（$ServerRoot），跳过扩展组件构建。" -ForegroundColor Yellow
     } else {
@@ -340,7 +353,11 @@ if (-not (Test-Path $ServerExe)) {
 $Exe = "dist\MiHome-Ex.exe"
 if (Test-Path $Exe) {
     $Size = [math]::Round((Get-Item $Exe).Length / 1MB, 1)
-    Write-Host "`n构建成功! $Exe ($Size MB)" -ForegroundColor Green
+    $Edition = if ($ClientOnly) { "客户端版" } else { "完整版" }
+    Write-Host "`n构建成功! [$Edition] $Exe ($Size MB)" -ForegroundColor Green
+    if ($ClientOnly) {
+        Write-Host "客户端版不含内置充电器服务：使用前在 设置 → 充电器远程后端 填入后端地址。" -ForegroundColor Yellow
+    }
     # 主程序产物在即视为成功，显式归零：扩展组件编译失败只是警告降级
     # （设计如此），但失败分支里最后一条原生命令的 $LASTEXITCODE 会残留
     # 1——GitHub Actions 的 pwsh 步骤按它当退出码，v0.4.5 实测整个 job

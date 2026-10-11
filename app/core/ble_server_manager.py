@@ -39,6 +39,29 @@ def _default_url() -> str:
     return f"http://127.0.0.1:{_SERVER_PORT}"
 
 
+def get_backend_url() -> str:
+    """当前充电器数据源地址。
+
+    设置里填了远程地址（分离式部署）则直接返回；否则回退本机默认。
+    客户端（HTTP/SSE/凭据写入）统一从这里取址，保证与拉起策略一致。
+    """
+    from app.core.settings_store import get_ble_server_url
+    remote = get_ble_server_url()
+    if remote:
+        return remote if "://" in remote else f"http://{remote}"
+    return _default_url()
+
+
+def is_remote_mode() -> bool:
+    """是否为分离式部署（远程后端）模式。
+
+    远程模式下主程序不拉起内置 BLE 组件：8199 的本地服务与远程实例
+    会争抢充电器唯一的 BLE 连接，内置组件必须让位。
+    """
+    from app.core.settings_store import get_ble_server_url
+    return bool(get_ble_server_url())
+
+
 def _data_dir() -> Path:
     """服务端数据目录：%LOCALAPPDATA%\\MiHome-Ex\\ble-server\\。
 
@@ -107,7 +130,8 @@ class BleServerManager(QObject):
     def __init__(self, parent: QObject | None = None,
                  base_url: str | None = None) -> None:
         super().__init__(parent)
-        self._base_url = base_url or _default_url()
+        # 分离式部署（远程后端）时基址来自设置；base_url 参数保留给测试注入
+        self._base_url = base_url or get_backend_url()
         self._process: QProcess | None = None
         self._state = "stopped"
         self._external = False  # 8199 被外部服务占用（非本管理器拉起）
@@ -138,10 +162,20 @@ class BleServerManager(QObject):
     # ---------- 启动 ----------
 
     def start(self) -> None:
-        """按设置拉起服务端（幂等）。异步：就绪与否经信号通知。"""
+        """按设置拉起服务端（幂等）。异步：就绪与否经信号通知。
+
+        远程模式（分离式部署）下不拉起内置组件：数据源在远程主机上，
+        本地再拉起会与远程实例争抢充电器 BLE 连接（同时只能一台主机
+        连接）。此时本管理器仅按远程地址做探活，失败如实报 failed。
+        """
         if self._state in ("starting", "running"):
             return
         self._stop_requested = False
+        if is_remote_mode():
+            self._external = True  # 生命周期归远程主机，本进程不清理
+            self._set_state("starting")
+            self._begin_ready_polling()
+            return
         cmd = locate_server_command()
         if cmd is None:
             # 组件缺失（未打包服务端/无服务端 venv）：静默降级为无本地源，
@@ -222,6 +256,7 @@ class BleServerManager(QObject):
         """
         self._stop_requested = True
         self._stop_ready_polling()
+        # 远程模式无本地子进程可停；_external 已在 start 时置位，走同一分支
         if self._external or self._process is None:
             self._process = None
             self._set_state("stopped")
