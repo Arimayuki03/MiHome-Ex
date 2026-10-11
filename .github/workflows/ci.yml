@@ -135,7 +135,7 @@ jobs:
           $ver = (Get-Item 'dist\MiHome-Ex.exe').VersionInfo.ProductVersion
           if ($ver -notlike "$tag*") { throw "tag $tag 与产物版本 $ver 不一致" }
 
-      - name: 打 Inno Setup 安装包
+      - name: 打 Inno Setup 安装包（完整版 + 客户端版）
         shell: pwsh
         run: |
           $iscc = Get-ChildItem "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
@@ -146,7 +146,16 @@ jobs:
             choco install innosetup -y --no-progress
             $iscc = Get-ChildItem "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Select-Object -First 1
           }
+          # 完整版：含 ble-server 扩展组件
           & $iscc.FullName installer\MiHome-Ex.iss
+          # 客户端版（分离式部署，不含内置充电器服务）：主程序 exe 与
+          # 完整版字节一致，复用同一次 Nuitka 编译——把 ble-server\ 移出
+          # dist，iss 的 DirExists 守卫即走"组件缺失"分支；打完恢复原位
+          # （便携版 zip 仍按完整 dist 打，ble-server 不受影响）
+          Move-Item 'dist\ble-server' "$env:RUNNER_TEMP\ble-server-keep" -Force
+          & $iscc.FullName /DClientOnly installer\MiHome-Ex.iss
+          Move-Item "$env:RUNNER_TEMP\ble-server-keep" 'dist\ble-server' -Force
+          Get-ChildItem 'installer\Output' -File | Select-Object Name, Length
 
       - name: 打便携版 zip 并计算 SHA-256
         shell: pwsh
