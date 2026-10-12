@@ -4,6 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mihome-ex"
+# 版本同步：唯一信源是 app/__init__.py 的 __version__（build.ps1 与 CI 读它）；
+# 发布时本处与 installer/version.ini 一起对齐（本值落后于 0.5.4，下个版本一并同步）。
 version = "0.4.5"
 description = "米家设备的 Windows 桌面控制端（扩展版），基于 mijiaAPI 构建；由 MiHome-Windows fork 而来"
 readme = "README.md"
