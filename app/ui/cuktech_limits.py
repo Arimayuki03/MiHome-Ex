@@ -70,6 +70,39 @@ def _port_name(port: int) -> str:
     return _PORT_LABELS.get(port, f"P{port}")
 
 
+# 服务端 /api/status 的 permanent_ports 名称 -> 对外端口号（cuktech_client._key_to_port 同源）
+_PERMANENT_NAME_TO_PORT: dict[str, int] = {"c1": 1, "c2": 2, "c3": 3, "a": 4}
+
+
+def _normalize_permanent_ports(raw) -> set[int]:
+    """permanent_ports（端口名或数字，大小写不敏感）规整为端口号集合。
+
+    接受服务端原名列表（``["c1", "a"]``）或数字（``[1, 4]``/``["1"]``）。
+    缺字段/脏值不按「无常供」静默清空（避免瞬时缺帧误解除保护）：调用方
+    以 None 表示"沿用上一帧"、显式空序列表示"清空"（见 update_limits）。
+    """
+    ports: set[int] = set()
+    if raw is None:
+        return ports
+    try:
+        items = list(raw)
+    except TypeError:
+        return ports
+    for item in items:
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, int):
+            if 1 <= item <= 4:
+                ports.add(item)
+            continue
+        key = str(item).strip().lower()
+        if key in _PERMANENT_NAME_TO_PORT:
+            ports.add(_PERMANENT_NAME_TO_PORT[key])
+        elif key.isdigit() and 1 <= int(key) <= 4:
+            ports.add(int(key))
+    return ports
+
+
 def _as_float(value) -> float:
     """宽松转 float：None/脏值一律 0.0（渲染路径用，不拦截）。"""
     try:
@@ -178,6 +211,7 @@ class ChargeLimitStack(QWidget):
         super().__init__(parent)
         self._syncing = False               # 程序化回填下拉时屏蔽 touched
         self._data: dict[int, dict] = {}    # 最近一帧设备值（失败恢复用）
+        self._permanent: set[int] = set()   # 长期供电端口（禁用限额控件）
         self._rows: dict[int, dict] = {}
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -266,16 +300,23 @@ class ChargeLimitStack(QWidget):
 
     # ---------- 数据注入（外部驱动，不发请求） ----------
 
-    def update_limits(self, limits: dict) -> None:
+    def update_limits(self, limits: dict, permanent_ports=None) -> None:
         """整帧刷新（门面 cuktech_charge_limits 返回体或裸 limits dict）。
 
         limits 键为 int 1-4（客户端已规整；str 数字键兼容），每项含
         wh/mode/fired/session_wh/is_charging；缺省端口按未启用渲染。
         正在编辑的输入框/已改动的下拉不覆盖（焦点保护），内容与设备
         值一致时自动恢复同步。
+
+        permanent_ports 为服务端 /api/status 的长期供电端口（名或数字）；
+        这些端口服务端会拒绝限额写入（400），本组件禁用其控件并给出中文
+        说明。``None`` 表示沿用上一帧（老服务端无此字段时不清状态），
+        显式传入空序列则清空（离线重置用）。
         """
         if not isinstance(limits, dict):
             return
+        if permanent_ports is not None:
+            self._permanent = _normalize_permanent_ports(permanent_ports)
         inner = limits.get("limits")
         mapping = inner if isinstance(inner, dict) else limits
         for port in self._rows:
@@ -310,8 +351,23 @@ class ChargeLimitStack(QWidget):
         fired = bool(entry.get("fired"))
         session = _as_float(entry.get("session_wh"))
 
-        # 状态行三态：未启用 / 仅一次|长期有效（+「· 已触发」警示色）
-        if wh > 0:
+        # 长期供电端口：服务端拒绝对其写限额（400 英文报错），这里禁用整排
+        # 控件并给出说明；端口切回普通模式后（下一帧 permanent_ports 变化）
+        # 自动恢复。禁用态样式走各控件 QSS 的 :disabled 分支。
+        permanent = port in self._permanent
+        row["frame"].setToolTip(
+            "该端口为长期供电（不切断、不设限额）；可在充电器 Web 界面关闭长期供电"
+            if permanent else "")
+        for widget in (row["edit"], row["combo"], row["set_btn"], row["off_btn"],
+                       *row["quick"]):
+            widget.setEnabled(not permanent)
+
+        # 状态行三态：未启用 / 仅一次|长期有效（+「· 已触发」警示色）；
+        # 常供端口优先显示模式说明（其 wh 恒被服务端清零，走不到三态分支）
+        if permanent:
+            text = "长期供电 · 不设限额"
+            color = SiColors.TEXT_SECONDARY
+        elif wh > 0:
             text = _MODE_LABELS[0 if mode == "once" else 1]
             color = SiColors.TEXT_SECONDARY
             if fired:
@@ -378,12 +434,16 @@ class ChargeLimitStack(QWidget):
 
     def _on_quick(self, port: int, wh: int) -> None:
         """快捷档：填入输入框并立即提交（点击=填入+提交）。"""
+        if self._guard_permanent(port):
+            return
         row = self._rows[port]
         row["edit"].setText(str(wh))  # 填入（不动 touched，提交后随轮询同步）
         self.limit_commit.emit(port, float(wh), self._current_mode(port))
 
     def _on_set(self, port: int) -> None:
         """设置：校验输入框（空白/NaN/负数/越界本地拦截）后提交。"""
+        if self._guard_permanent(port):
+            return
         wh = _parse_wh(self._rows[port]["edit"].text())
         if wh is None:
             self.invalid_input.emit(
@@ -393,9 +453,18 @@ class ChargeLimitStack(QWidget):
 
     def _on_off(self, port: int) -> None:
         """关闭限额：清空输入框并提交 wh:0（mode 随当前下拉，服务端忽略）。"""
+        if self._guard_permanent(port):
+            return
         row = self._rows[port]
         row["edit"].setText("")
         self.limit_commit.emit(port, 0.0, self._current_mode(port))
+
+    def _guard_permanent(self, port: int) -> bool:
+        """常供端口交互防绕过：控件已禁用，信号若仍被程序化触发则拦下并提示。"""
+        if port in self._permanent:
+            self.invalid_input.emit("该端口为长期供电，不支持充电量限额")
+            return True
+        return False
 
     # ---------- 主题观感 ----------
 

@@ -2129,9 +2129,14 @@ class CuktechPanel(QWidget):
         摘要行（折叠时的唯一限额信息）取「进行中最接近限额的端口」：
         is_charging 且 wh>0 的口按进度就近排序，进度条 fired 的口加
         「已触发」；无活跃限额显示已启用口数。
+
+        长期供电端口（status["permanent_ports"]，v1.2.0 服务端起提供）在
+        卡组里禁用限额控件：服务端会拒绝其限额写入（400 英文报错）。
+        老服务端无此字段时为 None，卡组沿用上一帧状态。
         """
         self._limits = limits
-        self._limit_stack.update_limits(limits or {})
+        permanent = (self._status or {}).get("permanent_ports")
+        self._limit_stack.update_limits(limits or {}, permanent_ports=permanent)
         entries = (limits or {}).get("limits") or {}
         session_total = 0.0
         active: list[tuple[float, str]] = []   # (进度 0-1, 摘要文案)
@@ -2171,9 +2176,10 @@ class CuktechPanel(QWidget):
         self._watts_label.setText("-- W")
         self._fw_label.setText("")
         self._session_label.setText("本次会话已充 —")
-        # 主视觉件清零（空帧渲染为空载/0W/无占比），限额卡组回未启用
+        # 主视觉件清零（空帧渲染为空载/0W/无占比），限额卡组回未启用；
+        # 离线未知常供状态，显式清空（控件恢复可用，提交失败由服务端兜底）
         self._render_ports_view({})
-        self._limit_stack.update_limits({})
+        self._limit_stack.update_limits({}, permanent_ports=())
 
     # ---------- 程序化开关同步（设备设置页开关组回填用） ----------
 

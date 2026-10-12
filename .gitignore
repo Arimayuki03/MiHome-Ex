@@ -63,3 +63,6 @@ htmlcov/
 
 # ---- 安装包构建输出 ----
 installer/Output/
+
+# ---- Mimosa 安全钩子的本地状态（不入库） ----
+.mimosa/

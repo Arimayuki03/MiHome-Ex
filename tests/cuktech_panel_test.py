@@ -88,6 +88,8 @@ FAKE_STATUS = {
     "protocol_switches": FAKE_PROTOCOL_SWITCHES,
     "device_model": "CUKTECH-10U",
     "firmware_version": "1.2.3",
+    # 服务端 v1.2.0 起下发：长期供电端口（限额控件据此禁用/恢复）
+    "permanent_ports": [],
 }
 
 FAKE_LIMITS = {
@@ -569,7 +571,57 @@ def test_panel_settings_tab(theme: str) -> None:
     print(f"3c. 设置 Tab 场景乐观保护/延时快捷卡/回填保护 OK [{theme}]")
 
 
-# ---------- 3d. 协议 Tab 已移除：无该 Tab + protocol 事件只走弹窗 ----------
+# ---------- 3d. 长期供电端口限额保护（status.permanent_ports 接线） ----------
+
+
+def test_panel_permanent_ports(theme: str) -> None:
+    """面板把 status["permanent_ports"] 转发给限额卡组：常供端口控件禁用、
+    切回普通模式自动恢复、程序化触发不发提交（服务端会 400 拒绝常供限额）。"""
+    apply_theme(theme)
+    service = FakeService()
+    panel = CuktechPanel(service, jobs, DEV)
+    panel.show_device(DEV.did, online=True, device=DEV)
+    _drain_jobs()
+
+    rows = panel._limit_stack._rows
+    # 基线（permanent_ports=[]）：C1 限额控件可用
+    assert rows[1]["edit"].isEnabled() and rows[1]["set_btn"].isEnabled()
+
+    # 服务端报告 c1 为长期供电 -> 下一帧后控件禁用 + 状态说明
+    FAKE_STATUS["permanent_ports"] = ["c1"]
+    try:
+        panel.refresh_data(manual=True)
+        _drain_jobs()
+        assert not rows[1]["edit"].isEnabled(), "常供端口输入框未禁用"
+        assert not rows[1]["set_btn"].isEnabled() and not rows[1]["off_btn"].isEnabled()
+        assert all(not b.isEnabled() for b in rows[1]["quick"])
+        assert rows[1]["status"].text() == "长期供电 · 不设限额", \
+            rows[1]["status"].text()
+        # 非常供端口不受影响
+        assert rows[3]["edit"].isEnabled(), "非常供端口被误禁用"
+
+        # 防绕过：程序化触发也不得打到 service
+        before = len(service.set_limit_calls)
+        rows[1]["edit"].setText("10")
+        panel._limit_stack._on_set(1)
+        _drain_jobs()
+        assert len(service.set_limit_calls) == before, "常供端口限额未被拦截"
+    finally:
+        FAKE_STATUS["permanent_ports"] = []
+
+    # 服务端切回普通模式（permanent_ports=[]，新服务端总是下发该键）-> 恢复
+    panel.refresh_data(manual=True)
+    _drain_jobs()
+    assert rows[1]["edit"].isEnabled() and rows[1]["set_btn"].isEnabled(), \
+        "退出常供后控件未恢复"
+    assert rows[1]["status"].text() == "仅一次", rows[1]["status"].text()
+
+    panel.hide()
+    panel.deleteLater()
+    print(f"3d. 长期供电端口限额保护（禁用/防绕过/恢复）OK [{theme}]")
+
+
+# ---------- 3e. 协议 Tab 已移除：无该 Tab + protocol 事件只走弹窗 ----------
 
 
 def test_panel_protocol_tab(theme: str) -> None:
@@ -617,10 +669,10 @@ def test_panel_protocol_tab(theme: str) -> None:
     app.processEvents()
     panel.hide()
     panel.deleteLater()
-    print(f"3d. 协议 Tab 移除/push_protocol 无弹窗忽略+弹窗转发 OK [{theme}]")
+    print(f"3e. 协议 Tab 移除/push_protocol 无弹窗忽略+弹窗转发 OK [{theme}]")
 
 
-# ---------- 3e. SSE 推送注入：增量喂到舞台与端口卡 ----------
+# ---------- 3f. SSE 推送注入：增量喂到舞台与端口卡 ----------
 
 
 def test_panel_sse_push(theme: str) -> None:
@@ -673,10 +725,10 @@ def test_panel_sse_push(theme: str) -> None:
 
     panel.hide()
     panel.deleteLater()
-    print(f"3e. SSE push_port_status/push_status/push_settings 整合注入 OK [{theme}]")
+    print(f"3f. SSE push_port_status/push_status/push_settings 整合注入 OK [{theme}]")
 
 
-# ---------- 3f. 端口详情弹窗接线：port_clicked → 打开/喂数/关闭清理 ----------
+# ---------- 3g. 端口详情弹窗接线：port_clicked → 打开/喂数/关闭清理 ----------
 
 
 def test_panel_port_detail_dialog(theme: str) -> None:
@@ -744,10 +796,10 @@ def test_panel_port_detail_dialog(theme: str) -> None:
     app.processEvents()
     panel.hide()
     panel.deleteLater()
-    print(f"3f. port_clicked 开弹窗/三路转发喂数/关闭清引用 OK [{theme}]")
+    print(f"3g. port_clicked 开弹窗/三路转发喂数/关闭清引用 OK [{theme}]")
 
 
-# ---------- 3g. quality 注入 + session_end 节流刷新历史/统计 ----------
+# ---------- 3h. quality 注入 + session_end 节流刷新历史/统计 ----------
 
 
 def test_panel_quality_and_session_end(theme: str) -> None:
@@ -818,7 +870,7 @@ def test_panel_quality_and_session_end(theme: str) -> None:
 
     panel.hide()
     panel.deleteLater()
-    print(f"3g. push_quality 文案/on_session_end 条件刷新与 5s 节流 OK [{theme}]")
+    print(f"3h. push_quality 文案/on_session_end 条件刷新与 5s 节流 OK [{theme}]")
 
 
 # ---------- 4. 暗色主题重复全部用例 ----------
@@ -828,6 +880,7 @@ test_card("dark")
 test_panel("dark")
 test_panel_history_tab("dark")
 test_panel_settings_tab("dark")
+test_panel_permanent_ports("dark")
 test_panel_protocol_tab("dark")
 test_panel_sse_push("dark")
 test_panel_port_detail_dialog("dark")
@@ -840,6 +893,7 @@ test_card("light")
 test_panel("light")
 test_panel_history_tab("light")
 test_panel_settings_tab("light")
+test_panel_permanent_ports("light")
 test_panel_protocol_tab("light")
 test_panel_sse_push("light")
 test_panel_port_detail_dialog("light")

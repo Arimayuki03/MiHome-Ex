@@ -234,6 +234,51 @@ def test_limit_stack(theme: str) -> None:
     assert rows[1]["combo"].currentIndex() == 0, "失败后模式未恢复"
     assert rows[1]["edit_touched"] is False and rows[1]["mode_touched"] is False
 
+    # --- 长期供电端口保护：禁用控件 + 状态说明 + 防绕过 + 可恢复 ---
+    # 服务端 v1.2.0 起 /api/status 下发 permanent_ports（端口名），对这些
+    # 端口写限额会被 400 拒绝——本组件直接禁用其控件并给中文说明
+    limit_commits.clear()
+    limit_invalid.clear()
+    stack.update_limits(FAKE_LIMITS, permanent_ports=["c1", "a"])
+    app.processEvents()
+    assert rows[1]["status"].text() == "长期供电 · 不设限额", \
+        rows[1]["status"].text()
+    assert not rows[1]["edit"].isEnabled(), "常供端口输入框未禁用"
+    assert not rows[1]["set_btn"].isEnabled() and not rows[1]["off_btn"].isEnabled()
+    assert all(not b.isEnabled() for b in rows[1]["quick"]), \
+        "常供端口快捷档未禁用"
+    assert rows[4]["status"].text() == "长期供电 · 不设限额"
+    assert not rows[4]["edit"].isEnabled()
+    assert rows[1]["frame"].toolTip(), "常供端口未给说明气泡"
+    # 非常供端口不受影响
+    assert rows[2]["edit"].isEnabled() and rows[2]["set_btn"].isEnabled()
+    assert rows[2]["status"].text() == "未启用"
+    assert rows[2]["frame"].toolTip() == ""
+
+    # 防绕过：控件虽禁用，程序化触发 _on_set/_on_quick/_on_off 也不得发提交
+    rows[1]["edit"].setText("10")
+    stack._on_set(1)
+    stack._on_quick(1, 5)
+    stack._on_off(1)
+    assert limit_commits.calls == [], f"常供端口限额未被拦截: {limit_commits.calls}"
+    assert len(limit_invalid.calls) == 3, limit_invalid.calls
+
+    # 显式空序列（离线重置语义）：控件恢复、说明清除、状态回三态
+    stack.update_limits(FAKE_LIMITS, permanent_ports=())
+    app.processEvents()
+    assert rows[1]["edit"].isEnabled() and rows[1]["set_btn"].isEnabled()
+    assert rows[1]["status"].text() == "仅一次", rows[1]["status"].text()
+    assert rows[1]["frame"].toolTip() == ""
+    # 数字/str 形式等价接受；None 沿用上一帧（不清除）
+    stack.update_limits(FAKE_LIMITS, permanent_ports=[1])
+    assert not rows[1]["edit"].isEnabled()
+    stack.update_limits(FAKE_LIMITS, permanent_ports=["1"])
+    assert not rows[1]["edit"].isEnabled()
+    stack.update_limits(FAKE_LIMITS, permanent_ports=None)
+    assert not rows[1]["edit"].isEnabled(), "None 应沿用上一帧而非清空"
+    stack.update_limits(FAKE_LIMITS, permanent_ports=[])
+    assert rows[1]["edit"].isEnabled(), "显式空序列应清空常供态"
+
     # --- 双主题渲染非空白 ---
     app.processEvents()
     img = stack.grab().toImage()
