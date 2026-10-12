@@ -121,7 +121,9 @@ jobs:
           python -m venv .venv
           .venv\Scripts\python.exe -m pip install --upgrade pip
           .venv\Scripts\pip.exe install -e .
-          .venv\Scripts\pip.exe install nuitka ordered-set zstandard
+          # 上限钉 4.2：4.3 引入 PySide6 Windows 启动期随机 segfault
+          # （详见 build.ps1 安装分支注释）；适配 4.3 后再人工放行
+          .venv\Scripts\pip.exe install "nuitka>=4,<4.3" ordered-set zstandard
           .venv\Scripts\pip.exe install -r "${{ github.workspace }}\cuktech-ble-server\requirements.txt"
 
       - name: 构建（Nuitka 主程序 + BLE 服务端扩展）

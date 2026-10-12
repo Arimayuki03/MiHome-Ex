@@ -111,7 +111,12 @@ function Get-NuitkaVersion {
 $NuitkaVer = Get-NuitkaVersion
 if (-not $NuitkaVer) {
     Write-Host "Installing Nuitka... (downloading compiler toolchain, may take a minute)" -ForegroundColor Cyan
-    & $Python -m pip install nuitka ordered-set zstandard
+    # 上限钉 4.2：4.3 起把 PySide6 的 Windows PATH 注入从 exe 目录
+    # （__nuitka_binary_dir）改成 python_runtime_dir，引入启动期随机
+    # segfault（pyside6.abi3.dll 0xc0000005，约 1/4 概率必崩，v0.4.6~
+    # v0.5.1 的 CI 产物全部中招；4.2.2 同源码重建 10/10 稳定）。
+    # 适配 4.3 后再人工放行
+    & $Python -m pip install "nuitka>=4,<4.3" ordered-set zstandard
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] 安装 Nuitka 失败" -ForegroundColor Red
         exit 1
