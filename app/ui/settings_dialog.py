@@ -342,9 +342,9 @@ class SettingsDialog(OverlayDialog):
         self._ble_url_edit.setFixedWidth(220)
         self._ble_url_edit.textChanged.connect(self._on_ble_url_edited)
         url_row.addWidget(self._ble_url_edit)
-        # 远程模式下「内置充电器服务」开关无意义：置灰（拉起策略由地址决定）
-        self._ble_url_item.setVisible(bool(self._ble_server_original) or
-                                      bool(settings_store.get_ble_server_url()))
+        # 始终显示：本项是分离式部署的唯一入口，若仅在「内置服务开启或
+        # 已填地址」时可见，关闭内置服务后入口随之消失，用户将无法填写
+        # 远程地址（死锁）。远程模式下由 _on_ble_url_edited 置灰内置开关
         self._on_ble_url_edited(settings_store.get_ble_server_url())
 
         # ── 充电器一键登录（M5：复用米家会话提取凭据写入服务端） ──
@@ -401,7 +401,8 @@ class SettingsDialog(OverlayDialog):
         update_row.addWidget(self._update_toggle)
 
         return self._build_scroll([
-            self._ble_item, self._cred_item, self._autostart_item, self._speaker_item,
+            self._ble_item, self._ble_url_item, self._cred_item, self._autostart_item,
+            self._speaker_item,
             self._tray_item, self._start_min_item, self._hide_item,
             self._update_item,
         ])
