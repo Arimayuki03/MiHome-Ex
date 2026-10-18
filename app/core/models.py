@@ -61,6 +61,20 @@ class DeviceDetail:
     actions: list[ActionInfo]
 
 
+@dataclass
+class SceneInfo:
+    """米家手动场景（米家 APP → 智能 → 手动控制 中创建的项）。
+
+    home_id 是执行场景时上游 run_scene 所需的家庭 ID；
+    home_name 为家庭显示名（卡片副标题用），为空表示归属未知。
+    """
+
+    scene_id: str
+    name: str
+    home_id: str
+    home_name: str = ""
+
+
 def is_speaker(device: DeviceInfo) -> bool:
     """小爱音箱判定：音频控制栏、语音入口共用同一标准。
 

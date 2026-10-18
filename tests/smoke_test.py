@@ -37,6 +37,7 @@ def main() -> int:
     for name in (
         "_get_qr_login_data", "_complete_qr_login",
         "get_homes_list", "get_devices_list", "get_shared_devices_list",
+        "get_scenes_list", "run_scene",
     ):
         check(MijiaApiClass, name, "mijiaAPI")
 

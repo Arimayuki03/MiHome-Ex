@@ -22,6 +22,7 @@ _DEFAULTS: dict = {
     "voice_fab_enabled": True,
     "theme": "system",  # system / light / dark
     "hide_no_func_devices": False,
+    "show_scene_tab": True,  # 主页选项卡最左侧显示「场景」入口（手动场景一键执行）
     "default_speaker_did": "",  # 小爱指令默认输出音箱；空串=自动（第一个在线）
     "ui_scale": 1.0,    # 界面缩放个人微调乘数（叠加在软件基准缩放之上），需重启生效
     "tray_columns": 2,  # 托盘快捷窗口卡片列数：1 或 2
@@ -99,6 +100,17 @@ def get_hide_no_func_devices() -> bool:
 def set_hide_no_func_devices(value: bool) -> None:
     raw = _read_raw()
     raw["hide_no_func_devices"] = bool(value)
+    _write_raw(raw)
+
+
+def get_show_scene_tab() -> bool:
+    """是否在主页选项卡最左侧显示「场景」入口，默认开启。"""
+    return bool(_read_raw().get("show_scene_tab", True))
+
+
+def set_show_scene_tab(value: bool) -> None:
+    raw = _read_raw()
+    raw["show_scene_tab"] = bool(value)
     _write_raw(raw)
 
 
