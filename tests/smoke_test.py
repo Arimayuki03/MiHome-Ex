@@ -40,6 +40,9 @@ def main() -> int:
     ):
         check(MijiaApiClass, name, "mijiaAPI")
 
+    # 上游版本号：service.api_version 读取它供关于页展示，缺失会让版本行少一段
+    check(mijia_api_module, "__version__", "mijiaAPI")
+
     # 设备控制接口与元数据字段
     from mijiaAPI import mijiaDevice
     from mijiaAPI.devices import DevAction, DevProp  # 未在顶层导出，走子模块路径

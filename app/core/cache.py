@@ -13,7 +13,9 @@ import json
 from app.core import _json_store
 from app.core.models import DeviceInfo
 
-_CACHE_VERSION = 1
+# 版本 2：DeviceInfo 增加 spec_type 字段（上游 5.x 起按规格 URN 拉 spec）；
+# 旧版缓存缺该字段会让“隐藏无功能设备”误判，直接作废重新拉取
+_CACHE_VERSION = 2
 _FILENAME = "devices_cache.json"
 
 

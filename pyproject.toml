@@ -4,15 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mihome-windows"
-version = "0.2.0"
+version = "0.3.0"
 description = "米家设备的 Windows 桌面控制端，基于 mijiaAPI 构建"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
 authors = [{ name = "MiHome-Windows contributors" }]
 dependencies = [
-    # 上游锁死在 4.x：大版本升级可能破坏适配层，必须人工验证后放行
-    "mijiaAPI>=4.2,<5",
+    # 上游 5.x 起设备规格改从 miot-spec.org 官方源按 spec_type 获取，
+    # 适配层已同步改造；仍锁大版本，升级前必须人工验证
+    "mijiaAPI>=5,<6",
     "PySide6>=6.7",
     # 登录对话框渲染二维码用；虽是 mijiaAPI 的传递依赖，仍显式声明防止被动移除
     "qrcode>=8",

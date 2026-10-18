@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 import shiboken6
-from PySide6.QtCore import QPropertyAnimation, QPoint, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPropertyAnimation, QPoint, QSize, Qt, QTimer
 from PySide6.QtWidgets import QGraphicsOpacityEffect
 from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import (
@@ -247,6 +247,9 @@ class MainWindow(QMainWindow):
         self._grid.setContentsMargins(0, 4, 0, 12)
         self._grid.setSpacing(14)
         self._scroll.setWidget(self._grid_host)
+        # 垂直滚动条显隐会改变视口宽度但不触发窗口 resizeEvent，
+        # 监听视口自身尺寸变化，否则列数校验漏掉这类宽度变化
+        self._scroll.viewport().installEventFilter(self)
         content.addWidget(self._scroll, stretch=1)
 
         content_host = QWidget()
@@ -686,7 +689,8 @@ class MainWindow(QMainWindow):
         self._maybe_localize_names()
 
     def _on_product_names_failed(self, error: Exception) -> None:
-        # 网络失败不缓存结果：下一轮轮询会再次触发查询
+        # service 层已把查询失败按「无中文名」缓存（避免反复重试堵队列），
+        # 这里只会收到罕见意外；记录后等下次轮询再走完整流程
         self._localize_busy = False
         logger.warning("产品页名称查询失败: %s", error)
 
@@ -731,7 +735,7 @@ class MainWindow(QMainWindow):
     def show_about(self) -> None:
         """打开关于对话框（即用即建）。"""
         from app.ui.about_dialog import AboutDialog
-        dlg = AboutDialog(self)
+        dlg = AboutDialog(self, api_version=self._service.api_version())
         dlg.exec()
         dlg.deleteLater()
 
@@ -955,7 +959,7 @@ class MainWindow(QMainWindow):
 
     def _device_has_functions(self, device: DeviceInfo) -> bool:
         """None（spec 未拉取）视为有——等首轮轮询证实后再隐藏。"""
-        state = self._service.model_has_published_functions(device.model)
+        state = self._service.spec_has_published_functions(device.spec_type)
         return state is not False
 
     def _displayed_devices(self) -> list[DeviceInfo]:
@@ -1094,8 +1098,13 @@ class MainWindow(QMainWindow):
             card.open_requested.connect(self._on_open_device)
             self._cards[device.did] = card
             self._grid.addWidget(card, index // cols, index % cols)
-        for col in range(cols):
-            self._grid.setColumnStretch(col, 1)
+        # 列宽不参与剩余空间分配、布局整体左对齐：卡片宽度固定，窗口
+        # 加宽只应增加列数（_columns_for_width 已按此语义计算），若把
+        # 剩余宽度均分给各列，卡片间距会随窗口宽度漂移，远超设定的
+        # spacing；清理到历史列数上限，避免列数回缩后旧列的 stretch 残留
+        for col in range(max(cols, self._grid.columnCount())):
+            self._grid.setColumnStretch(col, 0)
+        self._grid.setAlignment(Qt.AlignmentFlag.AlignLeft)
         # 多余垂直空间全部推到最后一行之后，避免行距被均分拉大
         for row in range(rows):
             self._grid.setRowStretch(row, 0)
@@ -1113,16 +1122,32 @@ class MainWindow(QMainWindow):
         # 不设单排上限——宽屏下应自然补列而不是拉开卡片间距
         return max(1, cols)
 
+    @staticmethod
+    def _default_window_width() -> int:
+        """默认窗口逻辑宽：首屏恰好一排 5 个卡片。
+
+        与 _columns_for_width 同一套列宽/间距/边距口径反推，再留一个
+        间距的余量吸收取整与滚动条宽度差异。卡片宽度或边距调整时
+        自动跟随，避免两处数值各自漂移。
+        """
+        from app.ui.device_card import _CARD_FIXED_WIDTH
+        spacing = 14
+        right_margin = 12
+        content_margins = 24 * 2  # content 布局左右边距（构造处设置）
+        eff = 5 * (_CARD_FIXED_WIDTH + spacing) - spacing
+        return eff + right_margin + content_margins + spacing
+
     def showEvent(self, event) -> None:  # noqa: N802 (Qt 命名约定)
         super().showEvent(event)
-        # 首次显示：应用默认窗口尺寸 1780×1200 物理像素（按当前有效
-        # 缩放换算逻辑尺寸），并居中于所在屏幕的可用区域。首次启动时
-        # DPR 读数不可靠（曾导致尺寸异常），故延迟到 showEvent——此时
-        # 原生窗口已创建、读数准确。之后的托盘唤出保持上次位置
+        # 首次显示：应用默认窗口尺寸（宽度按逻辑像素取首屏一排 5 个
+        # 卡片所需值，高度按 1200 物理像素折算），并居中于所在屏幕的
+        # 可用区域。首次启动时 DPR 读数不可靠（曾导致尺寸异常），故
+        # 延迟到 showEvent——此时原生窗口已创建、读数准确。之后的
+        # 托盘唤出保持上次位置
         if not self._default_size_applied:
             self._default_size_applied = True
             dpr = self.devicePixelRatioF() or 1.0
-            self.resize(round(1780 / dpr), round(1200 / dpr))
+            self.resize(self._default_window_width(), round(1200 / dpr))
             from PySide6.QtGui import QGuiApplication
             screen = self.screen() or QGuiApplication.primaryScreen()
             avail = screen.availableGeometry()
@@ -1181,6 +1206,16 @@ class MainWindow(QMainWindow):
             return
         if self._columns_for_width(self._scroll.viewport().width()) != self._grid_columns:
             self._rebuild_grid()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt 命名约定)
+        # 视口宽度变化的第二信号源（第一是窗口 resizeEvent）：滚动条
+        # 显隐、布局瀑布等因素会让视口宽度晚于窗口稳定，此时复用同一
+        # 防抖与列数校验，保证网格列数与最终视口宽度一致
+        if (obj is self._scroll.viewport()
+                and event.type() == QEvent.Type.Resize
+                and self.isVisible()):
+            self._resize_timer.start()
+        return super().eventFilter(obj, event)
 
     # ---------- 快速开关 ----------
 

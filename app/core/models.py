@@ -12,7 +12,11 @@ from dataclasses import dataclass
 
 @dataclass
 class DeviceInfo:
-    """设备列表条目，只保留界面展示需要的最小字段集。"""
+    """设备列表条目，只保留界面展示需要的最小字段集。
+
+    spec_type 是云端下发的设备规格 URN（可能为空：手表、第三方牙刷
+    等无公开规格的设备），上游 5.x 按它拉取设备规格，取代旧版的 model。
+    """
 
     did: str
     name: str
@@ -20,6 +24,7 @@ class DeviceInfo:
     home_name: str
     room_name: str
     online: bool
+    spec_type: str = ""
 
 
 @dataclass

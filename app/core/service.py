@@ -3,12 +3,15 @@
 # Copyright (C) 2026 MiHome-Windows contributors
 """mijiaAPI 适配层——全项目唯一允许 import mijiaAPI 的模块。
 
-上游库只从 PyPI 安装升级（版本锁 <5，见 pyproject.toml），接口一旦变化
+上游库只从 PyPI 安装升级（版本锁 5.x，见 pyproject.toml），接口一旦变化
 只需要修改这里；界面层与线程层完全不感知第三方类型的存亡。
 
 依赖的上游半公开方法说明：扫码登录拆成 _get_qr_login_data 与
 _complete_qr_login 两步使用，是因为上游的 login() 会把二维码打印到
 终端，图形界面拿不到；官方 MCP server 也采用同样的两步组合。
+
+设备规格自上游 5.x 起按 spec_type（云端下发的规格 URN）获取，
+取代旧版按 model 在 home.miot-spec.com 抓页解析的方式。
 """
 
 import json
@@ -18,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import mijiaAPI as _mijia_api_pkg
 from mijiaAPI import (
     DeviceNotFoundError,
     GetDeviceInfoError,
@@ -28,14 +32,14 @@ from mijiaAPI import (
 from mijiaAPI.devices import DevAction, DevProp
 from mijiaAPI.miutils import generate_enc_params, gen_nonce, get_signed_nonce
 
-from . import icon_store
+from . import icon_store, spec_zh
 from .models import ActionInfo, DeviceDetail, DeviceInfo, PropInfo
 
 logger = logging.getLogger(__name__)
 
 # 单次批量属性读取的设备数上限，防止请求体过大被网关拒绝
 _BATCH_SIZE = 15
-# spec 并发拉取线程数；目标是 home.miot-spec.com 的独立请求，无会话竞争
+# spec 并发拉取线程数；目标是 miot-spec.org 的独立请求，无会话竞争
 _SPEC_WORKERS = 8
 
 
@@ -56,10 +60,10 @@ class MijiaService:
         # 这样 CLI 里扫过的码在 GUI 直接生效，反之亦然
         self._api = self._init_api()
         self._device_cache: dict[str, mijiaDevice] = {}
-        # did -> (model, name) 索引，批量读状态与共享设备组装时
+        # did -> (model, spec_type, name) 索引，批量读状态与共享设备组装时
         # 避免反复拉设备列表；自有与共享设备都在其中
-        self._device_index: dict[str, tuple[str, str]] = {}
-        # model -> spec 内存缓存，轮询命中后不再读文件/打网络
+        self._device_index: dict[str, tuple[str, str, str]] = {}
+        # spec_type -> spec 内存缓存，轮询命中后不再读文件/打网络
         self._spec_cache: dict[str, dict | None] = {}
         # spec 产品名缓存就绪后的产品页中文名缓存：
         # model -> 中文名或 None（已确认无中文名，不再重查）
@@ -86,6 +90,15 @@ class MijiaService:
             logger.warning("认证文件损坏已隔离为 auth.json.corrupt，请重新扫码登录: %s", exc)
             # 文件已移除，上游按「无认证文件」处理，available 恒为 False
             return mijiaAPI()
+
+    @staticmethod
+    def api_version() -> str:
+        """上游 mijiaAPI 的实际安装版本（关于页展示）。
+
+        运行时从包元信息读取而非从依赖清单抄写，包升级/降级后
+        界面展示自动跟随；取不到时返回空串由调用方决定是否展示。
+        """
+        return getattr(_mijia_api_pkg, "__version__", "")
 
     # ---------- 登录 ----------
 
@@ -149,6 +162,8 @@ class MijiaService:
                 home_name=home_name,
                 room_name=room_name,
                 online=bool(d.get("isOnline", False)),
+                # 云端对无公开规格的设备（手表、第三方牙刷等）不下发该字段
+                spec_type=d.get("spec_type") or "",
             ))
         return sorted(result, key=lambda x: (x.home_name, x.room_name, x.name))
 
@@ -258,6 +273,16 @@ class MijiaService:
         # 构造 mijiaDevice 本身要发两次网络请求（设备列表 + spec 拉取），
         # 按 did 缓存实例，面板切换时才不会反复打接口
         if did not in self._device_cache:
+            if did not in self._device_index:
+                self._refresh_device_index()
+            entry = self._device_index.get(did)
+            if entry is not None and not entry[1]:
+                # 云端未下发 spec_type（手表、第三方牙刷等无公开规格的
+                # 设备），上游 5.x 会拿空值拉规格抛 ValueError；这里提前
+                # 拦截给出用户可读提示，仅对确实存在于列表的无规格设备生效
+                raise ServiceError(
+                    "该设备无公开的功能规格（常见于仅蓝牙连接的产品），"
+                    "无法提供控制面板")
             try:
                 self._device_cache[did] = mijiaDevice(self._api, did=did)
             except DeviceNotFoundError:
@@ -273,17 +298,41 @@ class MijiaService:
                     "无法提供控制面板") from exc
             except Exception as exc:
                 raise _wrap_error(exc, "加载设备信息失败") from exc
+            self._patch_device_zh(self._device_cache[did])
         return self._device_cache[did]
+
+    @staticmethod
+    def _patch_device_zh(dev: mijiaDevice) -> None:
+        """给 mijiaDevice 的属性/动作描述补齐中文兜底。
+
+        上游构造从磁盘缓存读原始 spec，部分品类（音箱、温湿度计等）
+        缺中文 comment 会退化为纯英文；缓存文件不归适配层管、无法在
+        源头补，只能在对象组装后按名补一条，与 _fetch_spec 的内存
+        dict 路径保持同源逻辑（见 spec_zh）。
+        """
+        seen: set[int] = set()
+        for prop in dev.prop_list.values():
+            if id(prop) in seen:
+                continue  # 连字符与下划线两个键指向同一对象，去重防双写
+            seen.add(id(prop))
+            prop.desc = spec_zh.prop_desc_zh(prop.name, prop.desc)
+        for act in dev.action_list.values():
+            act.desc = spec_zh.action_desc_zh(act.name, act.desc)
 
     def _build_shared_device(self, did: str) -> mijiaDevice:
         """为共享设备手工组装 mijiaDevice（上游构造器不支持共享设备）。"""
         if did not in self._device_index:
             self._refresh_device_index()
-        model, name = self._device_index.get(did, ("", ""))
+        model, spec_type, name = self._device_index.get(did, ("", "", ""))
         if not model:
             raise ServiceError(f"未找到设备 {did}")
+        if not spec_type:
+            raise ServiceError(
+                "该设备无公开的功能规格（常见于仅蓝牙连接的产品），"
+                "无法提供控制面板")
         try:
-            dev_info = get_device_info(model, cache_path=self._api.auth_data_path.parent)
+            dev_info = get_device_info(
+                spec_type, cache_path=self._api.auth_data_path.parent)
         except GetDeviceInfoError as exc:
             raise ServiceError(
                 "该设备无公开的功能规格（常见于仅蓝牙连接的产品），"
@@ -396,25 +445,31 @@ class MijiaService:
                 result[did] = bool(item["value"]) if item.get("code") == 0 else None
         return result
 
-    def _fetch_spec(self, model: str, cache_dir) -> dict | None:
-        if not model:
+    def _fetch_spec(self, spec_type: str, cache_dir) -> dict | None:
+        if not spec_type:
             return None
         try:
-            return get_device_info(model, cache_path=cache_dir)
+            info = get_device_info(spec_type, cache_path=cache_dir)
         except (json.JSONDecodeError, UnicodeDecodeError):
             # 上游缓存文件损坏（多见于并发写坏）。不删掉重拉的话，
-            # 该型号的能力信息将永久缺失，开关与温湿度控件随之消失
+            # 该规格的能力信息将永久缺失，开关与温湿度控件随之消失；
+            # 缓存文件按 spec_type 命名，冒号替换为下划线（与上游一致）
             try:
-                (Path(cache_dir) / f"{model}.json").unlink(missing_ok=True)
+                (Path(cache_dir)
+                 / f"{spec_type.replace(':', '_')}.json").unlink(missing_ok=True)
             except OSError:
                 return None
             try:
-                return get_device_info(model, cache_path=cache_dir)
+                info = get_device_info(spec_type, cache_path=cache_dir)
             except Exception:
                 return None
         except Exception:
-            # 个别型号在 spec 站点不存在（如第三方牙刷），按无能力处理
+            # 个别规格在 miot-spec.org 不存在（如第三方牙刷），按无能力处理
             return None
+        # 部分品类（音箱、温湿度计等）官方数据缺中文 comment，
+        # 按属性/动作名兜底补齐，避免界面退化为纯英文（见 spec_zh）
+        spec_zh.apply_fallback(info)
+        return info
 
     @staticmethod
     def _find_on_method(info: dict) -> dict | None:
@@ -489,12 +544,12 @@ class MijiaService:
         return result
 
     def _specs_for(self, dids: list[str]) -> dict[str, dict | None]:
-        """did -> spec 映射，model 增量补齐 + spec 并发拉取。
+        """did -> spec 映射，spec_type 增量补齐 + spec 并发拉取。
 
         与 power_states 共用设备索引、内存 spec 缓存与上游文件缓存，
-        轮询同时刷开关和读数时不会产生额外请求。同型号多台设备只拉
-        一次：上游把 spec 缓存在按型号命名的同一个文件里，并发拉取
-        同型号会互相覆盖写坏缓存。
+        轮询同时刷开关和读数时不会产生额外请求。同一规格多台设备只拉
+        一次：上游把 spec 缓存在按规格命名的同一个文件里，并发拉取
+        同规格会互相覆盖写坏缓存。
         """
         if any(d not in self._device_index for d in dids):
             self._refresh_device_index()
@@ -502,31 +557,39 @@ class MijiaService:
         result: dict[str, dict | None] = {}
         to_fetch: list[str] = []
         for did in dids:
-            model = self._device_index.get(did, ("", ""))[0]
-            if not model:
+            spec_type = self._device_index.get(did, ("", "", ""))[1]
+            if not spec_type:
                 result[did] = None
-            elif model in self._spec_cache:
-                result[did] = self._spec_cache[model]
+            elif spec_type in self._spec_cache:
+                result[did] = self._spec_cache[spec_type]
             else:
-                to_fetch.append(model)
+                to_fetch.append(spec_type)
+        # 保序去重：同上循环里内存缓存未命中时会把同规格多台设备重复
+        # 入列，并发线程拉同一规格会同时写同一个缓存文件互相覆盖
+        to_fetch = list(dict.fromkeys(to_fetch))
 
         if to_fetch:
             cache_dir = self._api.auth_data_path.parent
             with ThreadPoolExecutor(max_workers=min(_SPEC_WORKERS, len(to_fetch))) as pool:
                 fetched = pool.map(
-                    lambda m: self._fetch_spec(m, cache_dir), to_fetch
+                    lambda st: self._fetch_spec(st, cache_dir), to_fetch
                 )
-                for model, spec in zip(to_fetch, fetched):
-                    self._spec_cache[model] = spec
+                for spec_type, spec in zip(to_fetch, fetched):
+                    self._spec_cache[spec_type] = spec
             for did in dids:
                 if did not in result:
                     result[did] = self._spec_cache.get(
-                        self._device_index.get(did, ("", ""))[0]
+                        self._device_index.get(did, ("", "", ""))[1]
                     )
         return result
 
     def _refresh_device_index(self) -> None:
-        """重建 did -> (model, name) 索引，自有与共享设备合并。"""
+        """重建 did -> (model, spec_type, name) 索引，自有与共享设备合并。
+
+        采用 upsert 而非整体清空重建：列表接口偶发返回空（尤其共享
+        列表）时，旧条目仍在才能继续组装共享设备；已移除设备的残留
+        条目无害，UI 不会再给出入口。
+        """
         try:
             all_devices = (
                 self._api.get_devices_list()
@@ -535,7 +598,8 @@ class MijiaService:
         except Exception as exc:
             raise _wrap_error(exc, "获取设备列表失败") from exc
         for d in all_devices:
-            self._device_index[str(d["did"])] = (d.get("model", ""), d.get("name", ""))
+            self._device_index[str(d["did"])] = (
+                d.get("model", ""), d.get("spec_type") or "", d.get("name", ""))
 
     # ---------- 设备图标 ----------
 
@@ -620,37 +684,47 @@ class MijiaService:
 
         用于无公开 spec 的设备（如仅蓝牙类）：这类设备在 /spec/ 路径
         404、specSummary.available=False，没有 spec 产品名可读，只有
-        产品页里有本地化商品名。结果（含 None=无中文名）写入缓存；
-        网络异常向上抛出由调用方决定重试。阻塞，须后台线程调用。
+        产品页里有本地化商品名。任何失败都缓存 None（含网络超时）：
+        该功能只是显示名锦上添花，而 jobs 是单线程串行队列，若失败不
+        记忆，秒级的轮询会把超时请求反复排进队列，堵死后续设备控制。
+        老站已基本不可用（响应超时或 404），失败记忆让每型号一个会
+        话只踩一次坑。阻塞，须后台线程调用。
         """
         if model in self._product_page_names:
             return self._product_page_names[model]
         import requests
 
-        r = requests.get(f"https://home.miot-spec.com/p/{model}", timeout=30,
-                         headers={"User-Agent": "Mozilla/5.0"})
         name = None
-        if r.status_code == 200:
-            m = re.search(
-                r'<script data-page="app" type="application/json">(.*?)</script>',
-                r.text, re.S)
-            if m:
-                product = json.loads(m.group(1)).get("props", {}).get("product", {})
-                name = product.get("name") or None
-                if name is not None and not any("一" <= ch <= "鿿" for ch in name):
-                    name = None  # 产品名也非中文，无回退价值
+        try:
+            r = requests.get(f"https://home.miot-spec.com/p/{model}", timeout=10,
+                             headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code == 200:
+                m = re.search(
+                    r'<script data-page="app" type="application/json">(.*?)</script>',
+                    r.text, re.S)
+                if m:
+                    product = json.loads(m.group(1)).get("props", {}).get("product", {})
+                    name = product.get("name") or None
+                    if name is not None and not any("一" <= ch <= "鿿" for ch in name):
+                        name = None  # 产品名也非中文，无回退价值
+        except Exception as exc:
+            logger.warning("产品页名称查询失败 %s: %s", model, exc)
         self._product_page_names[model] = name
         return name
 
-    def model_has_published_functions(self, model: str) -> bool | None:
-        """该型号是否发布过含属性的功能 spec。
+    def spec_has_published_functions(self, spec_type: str) -> bool | None:
+        """该规格是否发布过含属性的功能 spec。
 
-        True=有属性；False=无 spec 或 spec 无属性（无可控制功能）；
-        None=spec 尚未拉取（未知，调用方应视为有并等待轮询证实）。
+        True=有属性；False=无公开规格（云端未下发 spec_type）或无属性
+        （无可控制功能）；None=spec 尚未拉取（未知，调用方应视为有并
+        等待轮询证实）。
         """
-        if model not in self._spec_cache:
+        if not spec_type:
+            # 云端不下发 spec_type 即官方确认无公开规格，无需等待轮询
+            return False
+        if spec_type not in self._spec_cache:
             return None
-        spec = self._spec_cache[model]
+        spec = self._spec_cache[spec_type]
         return bool(spec and spec.get("properties"))
 
     def localized_product_names(self, dids: list[str], names: dict[str, str]) -> dict[str, str]:
@@ -670,8 +744,8 @@ class MijiaService:
             name = names.get(did, "")
             if not name or has_cjk(name):
                 continue  # 已是中文（用户改名或国内默认名），不替换
-            model = self._device_index.get(did, ("", ""))[0]
-            spec = self._spec_cache.get(model)
+            spec_type = self._device_index.get(did, ("", "", ""))[1]
+            spec = self._spec_cache.get(spec_type) if spec_type else None
             if not spec:
                 continue
             spec_name = str(spec.get("name") or "")
