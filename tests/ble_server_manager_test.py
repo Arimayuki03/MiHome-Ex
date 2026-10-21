@@ -25,46 +25,92 @@ from app.core.ble_server_manager import (  # noqa: E402
 app = QCoreApplication.instance() or QCoreApplication([])
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_data(tmp_path, monkeypatch):
+    """所有设置写入临时目录，测试不再触碰开发工作树的 settings.json。"""
+    monkeypatch.setattr(
+        settings_store._json_store, "data_file", lambda name: tmp_path / name)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+
+
 # ---------- locate_server_command ----------
 
 
-def test_locate_in_dev_returns_venv_command() -> None:
-    """开发态：服务端 venv 存在时返回 (python, [ha_server.py], 服务端目录)。"""
-    cmd = locate_server_command()
-    if cmd is None:
-        pytest.skip("服务端 venv 不存在（纯主仓库 clone 场景）")
-    program, args, work_dir = cmd
-    assert program.endswith("python.exe")
-    assert len(args) == 1 and args[0].endswith("ha_server.py")
-    assert (work_dir / "ha_server.py").is_file()
+def test_locate_in_dev_returns_venv_command(tmp_path, monkeypatch) -> None:
+    """开发态：临时构造同级服务端 venv，返回 (python, [ha_server.py], 目录)。
 
-
-def test_locate_packaged_missing_component() -> None:
-    """打包态组件缺失时返回 None（管理器据此静默降级）。
-
-    通过 monkeypatch 伪造打包态 + 不存在的 exe 路径验证。
+    不依赖本机 D:\\Code\\MiHome-Ex\\cuktech-ble-server 是否 checkout：
+    用 monkeypatch 伪造模块 __file__，把仓库根定位到 tmp_path 下的假仓库。
     """
     import app.core.ble_server_manager as mod
 
-    real_packaged = mod.is_packaged
-    real_resource_path = mod.resource_path
-    try:
-        mod.is_packaged = lambda: True
-        mod.resource_path = lambda rel: Path("Z:/definitely-missing") / rel
-        assert locate_server_command() is None
-    finally:
-        mod.is_packaged = real_packaged
-        mod.resource_path = real_resource_path
+    # parents[3] 对应仓库根的父目录；module 放在 tmp/repo/app/core/ 下
+    module = tmp_path / "repo" / "app" / "core" / "ble_server_manager.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("# fake module path\n", encoding="utf-8")
+    backend = tmp_path / "cuktech-ble-server"
+    (backend / ".venv" / "Scripts").mkdir(parents=True)
+    python = backend / ".venv" / "Scripts" / "python.exe"
+    python.write_text("fake python\n", encoding="utf-8")
+    entry = backend / "ha_server.py"
+    entry.write_text("# fake entry\n", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "__file__", str(module))
+    monkeypatch.setattr(mod, "is_packaged", lambda: False)
+    cmd = locate_server_command()
+    assert cmd is not None, "临时 venv + ha_server.py 应被识别为可用"
+    program, args, work_dir = cmd
+    assert program == str(python)
+    assert args == [str(entry)]
+    assert work_dir == backend
+    assert (work_dir / "ha_server.py").is_file()
+
+
+def test_locate_dev_missing_venv_returns_none(tmp_path, monkeypatch) -> None:
+    """开发态没有服务端 venv 时返回 None，不依赖本机同级仓库。"""
+    import app.core.ble_server_manager as mod
+
+    module = tmp_path / "repo" / "app" / "core" / "ble_server_manager.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("# fake module path\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "__file__", str(module))
+    monkeypatch.setattr(mod, "is_packaged", lambda: False)
+    assert locate_server_command() is None
+
+
+def test_locate_packaged_present(tmp_path, monkeypatch) -> None:
+    """打包态：dist/ble-server/CuktechBleServer.exe 存在时返回 exe 命令。"""
+    import app.core.ble_server_manager as mod
+
+    exe = tmp_path / "dist" / "ble-server" / "CuktechBleServer.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"fake exe")
+    monkeypatch.setattr(mod, "is_packaged", lambda: True)
+    monkeypatch.setattr(mod, "resource_path", lambda rel: tmp_path / "dist" / rel)
+    cmd = locate_server_command()
+    assert cmd is not None
+    program, args, work_dir = cmd
+    assert program == str(exe)
+    assert args == []
+    assert work_dir == exe.parent
+
+
+def test_locate_packaged_missing_component(tmp_path, monkeypatch) -> None:
+    """打包态组件缺失时返回 None（管理器据此静默降级）。"""
+    import app.core.ble_server_manager as mod
+
+    monkeypatch.setattr(mod, "is_packaged", lambda: True)
+    monkeypatch.setattr(
+        mod, "resource_path", lambda rel: tmp_path / "missing" / rel)
+    assert locate_server_command() is None
 
 
 # ---------- 数据目录 ----------
 
 
-def test_data_dir_under_localappdata() -> None:
-    import os
-
-    if os.environ.get("LOCALAPPDATA"):
-        assert _data_dir() == Path(os.environ["LOCALAPPDATA"]) / "MiHome-Ex" / "ble-server"
+def test_data_dir_under_localappdata(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    assert _data_dir() == tmp_path / "LocalAppData" / "MiHome-Ex" / "ble-server"
 
 
 # ---------- 设置存取 ----------
@@ -90,8 +136,17 @@ def _make_manager(probe_returns: bool) -> BleServerManager:
     return m
 
 
-def test_start_idempotent_when_probe_succeeds(qtbot=None) -> None:
-    """8199 已有应答 → 标记外部实例、置 running、不创建 QProcess。"""
+def test_start_idempotent_when_probe_succeeds(monkeypatch) -> None:
+    """8199 已有应答 → 标记外部实例、置 running、不创建 QProcess。
+
+    定位函数注入假的可用命令，避免本机是否 checkout 同级服务端影响
+    状态机断言；探活仍为内存桩，不真连 8199/BLE。
+    """
+    import app.core.ble_server_manager as mod
+
+    monkeypatch.setattr(
+        mod, "locate_server_command",
+        lambda: (r"C:\fake\python.exe", [r"C:\fake\ha_server.py"], Path(r"C:\fake")))
     m = _make_manager(probe_returns=True)
     states: list[str] = []
     m.state_changed.connect(states.append)

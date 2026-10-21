@@ -16,7 +16,11 @@ DeviceSource = Literal["cloud", "local"]
 
 @dataclass
 class DeviceInfo:
-    """设备列表条目，只保留界面展示需要的最小字段集。"""
+    """设备列表条目，只保留界面展示需要的最小字段集。
+
+    spec_type 是云端下发的设备规格 URN（可能为空：手表、第三方牙刷
+    等无公开规格的设备），上游 5.x 按它拉取设备规格，取代旧版的 model。
+    """
 
     did: str
     name: str
@@ -24,8 +28,12 @@ class DeviceInfo:
     home_name: str
     room_name: str
     online: bool
-    # 设备来源，默认 cloud：旧构造点与旧缓存文件（缺 source 键）反序列化时不报错
+    # 设备来源，默认 cloud。保持第 7 个位置参数为 source 的旧构造契约：
+    # 旧调用 DeviceInfo(..., "local") 仍必须解析为本地源。
     source: DeviceSource = "cloud"
+    # 云端下发的规格 URN；无公开规格设备为空（上游 5.x 起按它拉 spec）。
+    # 追加在 source 之后，关键字构造不受字段顺序影响。
+    spec_type: str = ""
 
     @property
     def is_cuktech(self) -> bool:
@@ -75,6 +83,20 @@ class DeviceDetail:
     model: str
     props: list[PropInfo]
     actions: list[ActionInfo]
+
+
+@dataclass
+class SceneInfo:
+    """米家手动场景（米家 APP → 智能 → 手动控制 中创建的项）。
+
+    home_id 是执行场景时上游 run_scene 所需的家庭 ID；
+    home_name 为家庭显示名（卡片副标题用），为空表示归属未知。
+    """
+
+    scene_id: str
+    name: str
+    home_id: str
+    home_name: str = ""
 
 
 def is_speaker(device: DeviceInfo) -> bool:

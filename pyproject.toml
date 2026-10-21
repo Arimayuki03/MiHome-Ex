@@ -5,19 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mihome-ex"
 # 版本同步：唯一信源是 app/__init__.py 的 __version__（build.ps1 与 CI 读它）；
-# 发布时本处与 installer/version.ini 一起对齐（本值落后于 0.5.4，下个版本一并同步）。
-version = "0.4.5"
+# 发布时本处与 installer/version.ini 保持同一版本。
+version = "0.6.0"
 description = "米家设备的 Windows 桌面控制端（扩展版），基于 mijiaAPI 构建；由 MiHome-Windows fork 而来"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
 authors = [{ name = "Arimayuki03 and MiHome-Ex contributors (based on MiHome-Windows by huanyuejue)" }]
 dependencies = [
-    # 上游锁死在 4.x：大版本升级可能破坏适配层，必须人工验证后放行
-    "mijiaAPI>=4.2,<5",
+    # 上游 5.x 起设备规格改从 miot-spec.org 官方源按 spec_type 获取，
+    # 适配层已同步改造；仍锁大版本，升级前必须人工验证
+    "mijiaAPI>=5,<6",
     # 上限钉 6.11：6.12.0 发布后 CI 3.12 job 的 theme_script 静默崩溃
     # （退出码 1、无 Traceback，faulthandler 亦无栈），本地 6.11.2 全绿；
-    # 适配 6.12 后再人工放行
+    # 适配 6.12 后再人工放行（fork 保留的兼容上限）
     "PySide6>=6.7,<6.12",
     # 登录对话框渲染二维码用；虽是 mijiaAPI 的传递依赖，仍显式声明防止被动移除
     "qrcode>=8",

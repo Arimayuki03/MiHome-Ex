@@ -19,9 +19,13 @@ MIJIA_API_URL = "https://github.com/Do1e/mijia-api"
 
 
 class AboutDialog(OverlayDialog):
-    """关于：遮罩 + 居中面板，与设置页同款观感。"""
+    """关于：遮罩 + 居中面板，与设置页同款观感。
 
-    def __init__(self, parent=None):
+    api_version 是上游 mijiaAPI 的实际安装版本（由适配层实时提供，
+    见 MijiaService.api_version），与本地版本号同行展示便于排查兼容性。
+    """
+
+    def __init__(self, parent=None, api_version: str = ""):
         super().__init__(parent)
         self.setWindowTitle("关于")
 
@@ -38,7 +42,10 @@ class AboutDialog(OverlayDialog):
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         lay.addWidget(self._title_label)
 
-        self._version_label = QLabel(f"版本 v{__version__}")
+        version_text = f"版本 v{__version__}"
+        if api_version:
+            version_text += f" | mijiaAPI {api_version}"
+        self._version_label = QLabel(version_text)
         self._version_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         lay.addWidget(self._version_label)
 

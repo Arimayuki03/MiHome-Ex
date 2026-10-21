@@ -274,6 +274,7 @@ from app.ui.cuktech_limits import ChargeLimitStack, DelayOffQuickCard
 from app.ui.cuktech_panel import CuktechDeviceCard, CuktechPanel, PowerCurveWidget
 from app.ui.cuktech_stage import DeviceStageWidget, MiniPhoneShareBar, PortCardGrid
 from app.ui.cuktech_visuals import MultiMetricCurve, SceneButtonRow
+from app.ui.device_card import _CARD_FIXED_HEIGHT, _CARD_FIXED_WIDTH
 
 service = FakeService()
 jobs = JobExecutor()
@@ -315,7 +316,7 @@ def test_curve(theme: str) -> None:
 def test_card(theme: str) -> None:
     apply_theme(theme)
     card = CuktechDeviceCard(DEV, service, jobs)
-    card.resize(216, 92)
+    card.resize(_CARD_FIXED_WIDTH, _CARD_FIXED_HEIGHT)
     card.show()
     app.processEvents()
     # 直接喂假状态（绕开轮询时序），断言渲染
@@ -911,8 +912,6 @@ print("6. 离线注册卡片构造 OK")
 
 # ---------- 7. 列宽一致性：专用卡与通用卡同尺寸 ----------
 
-from app.ui.device_card import _CARD_FIXED_WIDTH, _CARD_FIXED_HEIGHT
-assert (_CARD_FIXED_WIDTH, _CARD_FIXED_HEIGHT) == (216, 92)
 from app.ui.cuktech_panel import _CARD_FIXED_WIDTH as _CUK_W, _CARD_FIXED_HEIGHT as _CUK_H
 assert (_CUK_W, _CUK_H) == (_CARD_FIXED_WIDTH, _CARD_FIXED_HEIGHT), \
     "专用卡与通用卡尺寸不一致，需同步 _columns_for_width"

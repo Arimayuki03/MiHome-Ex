@@ -24,6 +24,122 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # ============================================================
+# 0. 发布安全辅助函数
+# ============================================================
+# 纯参数化、无副作用；tests/release_safety_test.py 会用 PowerShell AST
+# 抽取这些函数单独调用，验证版本提取与模板隔离行为（不执行构建）。
+function Get-AppVersion {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $hit = @(Select-String -LiteralPath $Path -Pattern '^__version__\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*(?:#.*)?$')
+    if ($hit.Count -ne 1) {
+        throw "无法从 $Path 读取唯一的 __version__ = `"x.y.z`"（匹配数：$($hit.Count)）"
+    }
+    return $hit[0].Matches[0].Groups[1].Value
+}
+
+function Get-ServerVersion {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "BLE 服务端 pyproject.toml 不存在：$Path"
+    }
+    $section = ""
+    $versions = @()
+    foreach ($raw in Get-Content -LiteralPath $Path -Encoding UTF8) {
+        if ($raw -match '^\[([^\]]+)\]\s*(?:#.*)?$') {
+            $section = $Matches[1].Trim()
+            continue
+        }
+        if ($section -ne "project") { continue }
+        $line = $raw.Trim()
+        if ($line -match '^version\s*=\s*["'']([0-9]+\.[0-9]+\.[0-9]+)["'']\s*(?:#.*)?$') {
+            $versions += $Matches[1]
+        }
+    }
+    if ($versions.Count -ne 1) {
+        throw "无法从 $Path 的 [project] 段读取唯一的 version = `"x.y.z`"（匹配数：$($versions.Count)）"
+    }
+    return $versions[0]
+}
+
+function Get-ServerConfigTemplate {
+    param([Parameter(Mandatory = $true)][string]$ServerRoot)
+    # 只认受版本控制的示例模板；绝不回退到本机运行配置（含真实凭据）。
+    $template = Join-Path $ServerRoot "config.yaml.example"
+    if (-not (Test-Path -LiteralPath $template -PathType Leaf)) {
+        throw "BLE 服务端缺少受版本控制的 config.yaml.example 模板：$template（拒绝回退到本地运行配置）"
+    }
+    return $template
+}
+
+function Assert-ServerConfigTemplate {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "BLE 默认配置模板不存在：$Path"
+    }
+
+    # 只解析本模板用到的两级标量结构；格式异常会明确失败，便于评审。
+    $sections = @{}
+    $current = $null
+    foreach ($raw in Get-Content -LiteralPath $Path -Encoding UTF8) {
+        $line = $raw.Trim()
+        if (-not $line -or $line.StartsWith("#")) { continue }
+        if ($raw -match '^([A-Za-z0-9_]+):\s*(?:#.*)?$') {
+            $current = $Matches[1]
+            if (-not $sections.ContainsKey($current)) { $sections[$current] = @{} }
+            continue
+        }
+        if ($null -eq $current) { continue }
+        if ($line -match '^([A-Za-z0-9_]+):\s*(.*)$') {
+            $key = $Matches[1]
+            $value = $Matches[2].Trim()
+            if ($value.StartsWith('"')) {
+                $end = $value.IndexOf('"', 1)
+                if ($end -lt 0) { throw "配置模板 $Path 的 $current.$key 引号未闭合" }
+                $value = $value.Substring(1, $end - 1)
+            } elseif ($value.StartsWith("'")) {
+                $end = $value.IndexOf("'", 1)
+                if ($end -lt 0) { throw "配置模板 $Path 的 $current.$key 引号未闭合" }
+                $value = $value.Substring(1, $end - 1)
+            } else {
+                $hash = $value.IndexOf("#")
+                if ($hash -ge 0) { $value = $value.Substring(0, $hash).Trim() }
+            }
+            $sectionTable = $sections[$current]
+            $sectionTable[$key] = $value
+        }
+    }
+
+    $required = @(
+        @("ble", "mac"), @("ble", "token"), @("ble", "ble_key"),
+        @("mqtt", "username"), @("mqtt", "password"), @("bemfa", "uid")
+    )
+    $errors = @()
+    foreach ($pair in $required) {
+        $sectionName = $pair[0]
+        $keyName = $pair[1]
+        if (-not $sections.ContainsKey($sectionName) -or -not ($sections[$sectionName].ContainsKey($keyName))) {
+            $errors += "缺少 $sectionName.$keyName"
+        }
+    }
+    if ($errors.Count -eq 0) {
+        if ($sections["ble"]["mac"] -notmatch '^(?:[Xx]{2}:){5}[Xx]{2}$') {
+            $errors += "ble.mac 必须为 XX:XX:XX:XX:XX:XX 占位值"
+        }
+        foreach ($pair in @(@("ble", "token"), @("ble", "ble_key"), @("mqtt", "username"), @("mqtt", "password"), @("bemfa", "uid"))) {
+            $sectionName = $pair[0]
+            $keyName = $pair[1]
+            if ($sections[$sectionName][$keyName] -ne "") {
+                # 不回显值，避免把疑似真实凭据写进构建日志
+                $errors += "$sectionName.$keyName 必须为空"
+            }
+        }
+    }
+    if ($errors.Count -gt 0) {
+        throw ("BLE 默认模板未通过发布安全检查：`n - " + ($errors -join "`n - "))
+    }
+}
+
+# ============================================================
 # 1. 自动创建 venv 并安装依赖
 # ============================================================
 $Pip = Join-Path $Root ".venv\Scripts\pip.exe"
@@ -140,6 +256,14 @@ if ($Clean -and (Test-Path "dist")) {
 # 5. 构建
 # ============================================================
 
+try {
+    $AppVersion = Get-AppVersion -Path "app\__init__.py"
+} catch {
+    Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  Version: $AppVersion" -ForegroundColor Gray
+
 $NuitkaArgs = @(
     "run.py"
     "--standalone"
@@ -175,8 +299,6 @@ $NuitkaArgs = @(
     "--output-dir=build.dist"
     "--output-filename=MiHome-Ex.exe"
     # 版本号自动从 app/__init__.py 的 __version__ 读取，单一信源
-    $AppVersion = (Select-String -Path "app\__init__.py" -Pattern '^__version__\s*=\s*"(.+?)"').Matches[0].Groups[1].Value
-    Write-Host "  Version: $AppVersion" -ForegroundColor Gray
     "--product-name=MiHome-Ex"
     "--product-version=$AppVersion"
     "--file-version=$AppVersion"
@@ -229,12 +351,14 @@ Write-Host ("`n编译耗时 {0:00}:{1:00}" -f [int]$Elapsed.TotalMinutes, $Elaps
 # ============================================================
 # 6. 扩展组件：内置 BLE 服务端（cuktech-ble-server）
 # ============================================================
-# 独立 Nuitka standalone，输出 dist\ble-server\。可选降级：编译失败
-# 仅警告不阻塞主应用（BleServerManager 按组件缺失静默不工作）。
+# 独立 Nuitka standalone，输出 dist\ble-server\。完整版必须包含该组件：
+# 源码/模板/编译/版本任一不满足即失败，不再静默降级，避免发布半成品。
 # -ClientOnly 时整段跳过（客户端版不含该组件）。开发态在同级目录
 # ..\cuktech-ble-server；CI 的 checkout 落在工作区内部
-# <workspace>\cuktech-ble-server（ci.yml 的 path:），两个位置都要认，
-# 否则扩展组件被当作"源码缺失"跳过、安装包不带 ble-server
+# <workspace>\cuktech-ble-server（ci.yml 的 path:），两个位置都要认。
+#
+# 数据模板只允许受版本控制的 config.yaml.example；绝不读取或打包本机
+# 运行配置（含真实 MAC/token/ble_key/MQTT 密码，已被 .gitignore 排除）。
 $ServerRoot = Join-Path $Root "..\cuktech-ble-server"
 if (-not (Test-Path (Join-Path $ServerRoot "ha_server.py"))) {
     $ServerRoot = Join-Path $Root "cuktech-ble-server"
@@ -250,24 +374,55 @@ if ($ClientOnly) {
         Write-Host "[ClientOnly] 已移除残留的 dist\ble-server\" -ForegroundColor Yellow
     }
     Write-Host "`n[ClientOnly] 客户端版构建：跳过 BLE 服务端扩展组件。" -ForegroundColor Cyan
-} elseif (-not (Test-Path $ServerExe)) {
+} else {
     if (-not (Test-Path (Join-Path $ServerRoot "ha_server.py"))) {
-        Write-Host "`n[WARN] 未找到 BLE 服务端源码（$ServerRoot），跳过扩展组件构建。" -ForegroundColor Yellow
-    } else {
-    Write-Host "`nBuilding BLE server extension (cuktech-ble-server)..." -ForegroundColor Cyan
-    # 不用 2>&1 重定向：脚本级 $ErrorActionPreference=Stop 会把
-    # stderr 文本升级为终止错误（NativeCommandError 假警报）
-    & $ServerVenvPy -m pip install --quiet nuitka ordered-set zstandard
-    $TempServerBuild = Join-Path $env:TEMP "mihome-server-build"
-    if (Test-Path $TempServerBuild) { Remove-Item $TempServerBuild -Recurse -Force }
-    New-Item -ItemType Directory -Force -Path $TempServerBuild | Out-Null
-    # CI 上服务端仓库是 fresh checkout，config.yaml 被 .gitignore
-    # 排除（含真实凭据，不入仓库）——缺失时回退模板，保证安装包
-    # 始终带一份可用的 config.default.yaml
-    $ServerCfg = Join-Path $ServerRoot "config.yaml"
-    if (-not (Test-Path $ServerCfg)) { $ServerCfg = Join-Path $ServerRoot "config.yaml.example" }
+        Write-Host "[ERROR] 未找到 BLE 服务端源码（$ServerRoot）。完整版必须包含内置充电器服务；如只需客户端版请显式使用 -ClientOnly。" -ForegroundColor Red
+        exit 1
+    }
 
-    $ServerNuitkaArgs = @(
+    try {
+        $ServerTemplate = Get-ServerConfigTemplate -ServerRoot $ServerRoot
+        Assert-ServerConfigTemplate -Path $ServerTemplate
+        $ServerVersion = Get-ServerVersion -Path (Join-Path $ServerRoot "pyproject.toml")
+    } catch {
+        Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  BLE server version: $ServerVersion" -ForegroundColor Gray
+
+    # 模板必须已入库且无未提交修改，防止本机改动混入发布包。
+    if (Test-Path (Join-Path $ServerRoot ".git")) {
+        cmd /c "git -C `"$ServerRoot`" ls-files --error-unmatch -- config.yaml.example >nul 2>&1"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] config.yaml.example 未纳入 BLE 服务端 Git 版本控制" -ForegroundColor Red
+            exit 1
+        }
+        cmd /c "git -C `"$ServerRoot`" diff --quiet -- config.yaml.example >nul 2>&1"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] config.yaml.example 有未提交修改，拒绝打包" -ForegroundColor Red
+            exit 1
+        }
+        cmd /c "git -C `"$ServerRoot`" diff --cached --quiet -- config.yaml.example >nul 2>&1"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] config.yaml.example 有已暂存修改，拒绝打包" -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    if (-not (Test-Path $ServerExe)) {
+        Write-Host "`nBuilding BLE server extension (cuktech-ble-server)..." -ForegroundColor Cyan
+        # 不用 2>&1 重定向：脚本级 $ErrorActionPreference=Stop 会把
+        # stderr 文本升级为终止错误（NativeCommandError 假警报）
+        & $ServerVenvPy -m pip install --quiet nuitka ordered-set zstandard
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] 安装 BLE 服务端构建依赖失败" -ForegroundColor Red
+            exit 1
+        }
+        $TempServerBuild = Join-Path $env:TEMP "mihome-server-build"
+        if (Test-Path $TempServerBuild) { Remove-Item $TempServerBuild -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path $TempServerBuild | Out-Null
+
+        $ServerNuitkaArgs = @(
         "ha_server.py"
         "--standalone"
         "--windows-console-mode=disable"
@@ -287,15 +442,17 @@ if ($ClientOnly) {
         "--include-module=winrt.windows.storage.streams"
         # 服务端 web 静态前端（内存预读 + FileResponse 兜底，必须随包）
         "--include-data-dir=web=web/"
-        "--include-data-files=$ServerCfg=config.default.yaml"
+        # 只打包受版本控制的示例模板；配置值全部为占位/空
+        "--include-data-files=$ServerTemplate=config.default.yaml"
         "--nofollow-import-to=tkinter,unittest,pytest,docker,systemd"
         "--jobs=4"
         "--assume-yes-for-downloads"
         "--output-dir=$TempServerBuild"
         "--output-filename=CuktechBleServer.exe"
         "--product-name=CuktechBleServer"
-        # 服务端版本与 bleed 服务端仓库 pyproject 同步（当前 1.1.5）
-        "--product-version=1.1.5"
+        # 版本资源从服务端 pyproject.toml 的 [project] version 读取
+        "--product-version=$ServerVersion"
+        "--file-version=$ServerVersion"
         "--company-name=MiHome-Ex contributors"
         "--file-description=CUKTECH 充电器 BLE 服务端（MiHome-Ex 扩展组件）"
         "--copyright=MIT (C) kairui1108/cuktech-ble-server contributors"
@@ -340,33 +497,58 @@ if ($ClientOnly) {
         Copy-Item (Join-Path $TempServerBuild "ha_server.dist\*") "dist\ble-server" -Recurse -Force
         Remove-Item $TempServerBuild -Recurse -Force -ErrorAction SilentlyContinue
         Write-Host "BLE server extension built: $ServerExe" -ForegroundColor Green
-    } else {
-        Write-Host "[WARN] BLE 服务端扩展编译失败，安装包将不含该组件（主应用功能不受影响，充电器卡片按组件缺失语义缺席）。" -ForegroundColor Yellow
-        # nuitka 的输出重定向到了日志文件，不回显的话 CI 上只能看到
-        # "编译失败" 四个字、无从诊断——回显尾部若干行
-        if (Test-Path $ServerLog) {
-            Write-Host "---- nuitka 日志尾部 ----" -ForegroundColor DarkGray
-            Get-Content $ServerLog -Tail 25
-            Write-Host "------------------------" -ForegroundColor DarkGray
+        } else {
+            Write-Host "[ERROR] BLE 服务端扩展编译失败。完整版发布必须包含该组件；如只需客户端版请使用 -ClientOnly。" -ForegroundColor Red
+            # nuitka 的输出重定向到了日志文件，不回显的话 CI 上只能看到
+            # "编译失败" 四个字、无从诊断——回显尾部若干行
+            if (Test-Path $ServerLog) {
+                Write-Host "---- nuitka 日志尾部 ----" -ForegroundColor DarkGray
+                Get-Content $ServerLog -Tail 25
+                Write-Host "------------------------" -ForegroundColor DarkGray
+            }
+            exit 1
         }
+    } else {
+        Write-Host "[OK] BLE server extension already built" -ForegroundColor Green
     }
+
+    # 无论新编译还是复用旧产物，都必须验证模板与版本，防止旧 dist 混入。
+    $PackagedTemplate = "dist\ble-server\config.default.yaml"
+    try {
+        Assert-ServerConfigTemplate -Path $PackagedTemplate
+    } catch {
+        Write-Host "[ERROR] 打包模板不安全：$($_.Exception.Message)" -ForegroundColor Red
+        exit 1
     }
-} else {
-    Write-Host "[OK] BLE server extension already built" -ForegroundColor Green
+    $TemplateHash = (Get-FileHash -LiteralPath $PackagedTemplate -Algorithm SHA256).Hash
+    $SourceHash = (Get-FileHash -LiteralPath $ServerTemplate -Algorithm SHA256).Hash
+    if ($TemplateHash -ne $SourceHash) {
+        Write-Host "[ERROR] dist\ble-server\config.default.yaml 与 config.yaml.example 不一致，拒绝发布" -ForegroundColor Red
+        exit 1
+    }
+    $BleVersion = (Get-Item $ServerExe).VersionInfo.ProductVersion
+    if ($BleVersion -notlike "$ServerVersion*") {
+        Write-Host "[ERROR] BLE 产物版本 $BleVersion 与 pyproject.toml $ServerVersion 不一致；请用 -Clean 重建" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  BLE extension version: $BleVersion" -ForegroundColor Gray
 }
 
 $Exe = "dist\MiHome-Ex.exe"
 if (Test-Path $Exe) {
+    $ExeVersion = (Get-Item $Exe).VersionInfo.ProductVersion
+    if ($ExeVersion -notlike "$AppVersion*") {
+        Write-Host "[ERROR] 主程序产物版本 $ExeVersion 与 app/__init__.py $AppVersion 不一致" -ForegroundColor Red
+        exit 1
+    }
     $Size = [math]::Round((Get-Item $Exe).Length / 1MB, 1)
     $Edition = if ($ClientOnly) { "客户端版" } else { "完整版" }
     Write-Host "`n构建成功! [$Edition] $Exe ($Size MB)" -ForegroundColor Green
     if ($ClientOnly) {
         Write-Host "客户端版不含内置充电器服务：使用前在 设置 → 充电器远程后端 填入后端地址。" -ForegroundColor Yellow
     }
-    # 主程序产物在即视为成功，显式归零：扩展组件编译失败只是警告降级
-    # （设计如此），但失败分支里最后一条原生命令的 $LASTEXITCODE 会残留
-    # 1——GitHub Actions 的 pwsh 步骤按它当退出码，v0.4.5 实测整个 job
-    # 误报失败
+    # 显式归零：最后一条原生命令的 $LASTEXITCODE 可能残留非零值，
+    # GitHub Actions 的 pwsh 步骤按它当退出码会误报失败。
     exit 0
 } else {
     Write-Host "[ERROR] 找不到输出文件" -ForegroundColor Red

@@ -10,7 +10,7 @@
 # CI 按 tag 校验的产物版本即来自这里。
 # 发布时三处一起改：本处、installer/version.ini（安装包显示）、
 # pyproject.toml [project].version（打包元数据）。
-__version__ = "0.5.4"
+__version__ = "0.6.0"
 
 import sys
 from pathlib import Path

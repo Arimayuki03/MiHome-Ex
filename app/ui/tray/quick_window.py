@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
 # Copyright (C) 2026 MiHome-Ex contributors
-"""托盘左键快捷窗口：设备行开关、音频栏、小爱语音条与呼出动画。"""
+"""托盘左键快捷窗口：设备/场景行、音频栏、小爱语音条与呼出动画。"""
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -33,11 +33,12 @@ import shiboken6
 
 from app.core import settings_store, tray_store
 from app.core.jobs import JobExecutor
-from app.core.models import DeviceInfo, is_speaker
+from app.core.models import DeviceInfo, SceneInfo, is_speaker
 from app.core.service import MijiaService
 from app.ui.cuktech_visuals import _PORT_COLORS
 from app.ui.power_button import PowerButton
 from app.ui.si_theme import SiColors
+from app.ui.toast import Toast
 from app.ui.tray.audio_bar import _TrayAudioBar
 from app.ui.typewriter import TypewriterPlaceholder
 
@@ -90,7 +91,7 @@ class TrayQuickWindow(QDialog):
         # 标题栏：房子（打开主窗口）+ 加号（管理）+ 关闭
         header = QHBoxLayout()
         header.setSpacing(6)
-        title = QLabel("托盘设备")
+        title = QLabel("托盘项目")
         title.setFont(QFont("Microsoft YaHei UI", 10, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
         header.addWidget(title)
@@ -126,7 +127,7 @@ class TrayQuickWindow(QDialog):
         add_btn = QPushButton()
         add_btn.setFixedSize(22, 22)
         add_btn.setCursor(Qt.PointingHandCursor)
-        add_btn.setToolTip("管理托盘设备")
+        add_btn.setToolTip("管理托盘项目")
         add_btn.setIcon(qta.icon('mdi.plus', color=f'{SiColors.TEXT_PRIMARY}'))
         add_btn.setIconSize(QSize(16, 16))
         add_btn.setStyleSheet(
@@ -175,7 +176,7 @@ class TrayQuickWindow(QDialog):
         self._scroll.setWidget(self._host)
         lay.addWidget(self._scroll, stretch=1)
 
-        self._empty = QLabel("暂无托盘设备\n点击右上角 + 添加")
+        self._empty = QLabel("暂无托盘项目\n点击右上角 + 添加")
         self._empty.setAlignment(Qt.AlignCenter)
         self._empty.setStyleSheet(f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 9pt;")
         self._empty.hide()
@@ -213,7 +214,10 @@ class TrayQuickWindow(QDialog):
         self._outer_lay.addWidget(self._root)
         self.resize(300, 380)
         self.setMinimumSize(280, 360)
+        # 设备 span、场景与统一顺序缓存：呼出时从 tray_store 刷新
         self._tray_entries: list[dict] = tray_store.load_entries()
+        self._tray_scenes: list[dict] | None = None
+        self._tray_order: list[dict] | None = None
         # 呼出/隐藏动画与点击外部隐藏
         self._target_pos: QPoint | None = None
         self._show_anim: QParallelAnimationGroup | None = None
@@ -266,6 +270,8 @@ class TrayQuickWindow(QDialog):
         self._devices = list(devices)
         self._known_power = dict(known_power)
         self._tray_entries = tray_store.load_entries()
+        self._tray_scenes = tray_store.load_scenes()
+        self._tray_order = tray_store.load_order()
         self._update_audio_bar()
         self._update_voice_bar()
         if self.isVisible():
@@ -358,26 +364,76 @@ class TrayQuickWindow(QDialog):
         else:
             self.resize(self.width(), h)
 
+    def _tray_items(self) -> list[tuple[str, DeviceInfo | SceneInfo, int]]:
+        """按统一 order 返回托盘项目：("device", DeviceInfo, span) 或
+        ("scene", SceneInfo, 1)。
+
+        order 缺失/损坏时按设备在前、场景在后兜底；不在 order 里的成员
+        追加到末尾，避免旧 tray.json 或新加项目在界面上消失。
+        """
+        entries = getattr(self, "_tray_entries", None)
+        if entries is None:
+            entries = self._tray_entries = tray_store.load_entries()
+        scene_data = getattr(self, "_tray_scenes", None)
+        if scene_data is None:
+            scene_data = self._tray_scenes = tray_store.load_scenes()
+        order = getattr(self, "_tray_order", None)
+        if order is None:
+            order = self._tray_order = tray_store.load_order()
+        lookup = {d.did: d for d in self._devices}
+        entry_map = {e["did"]: e for e in entries}
+        scene_map = {s["scene_id"]: SceneInfo(**s) for s in scene_data}
+
+        def device_span(did: str) -> int:
+            raw = entry_map.get(did, {}).get("span", 1)
+            try:
+                return max(1, min(int(raw), max(self._columns, 1)))
+            except (TypeError, ValueError):
+                return 1
+
+        result: list[tuple[str, DeviceInfo | SceneInfo, int]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in order:
+            t, i = item.get("type"), item.get("id")
+            key = (t, i)
+            # order 只负责排序；成员资格必须回到 entry_map/scene_map。
+            # 删除设备/场景后 order 可能残留旧 id，不能凭 lookup 继续展示。
+            if key in seen:
+                continue
+            if t == "device" and i in entry_map and i in lookup:
+                result.append(("device", lookup[i], device_span(i)))
+            elif t == "scene" and i in scene_map:
+                result.append(("scene", scene_map[i], 1))
+            else:
+                continue
+            seen.add(key)
+        for entry in entries:
+            did = entry["did"]
+            if ("device", did) not in seen and did in lookup:
+                result.append(("device", lookup[did], device_span(did)))
+                seen.add(("device", did))
+        for scene in scene_data:
+            sid = scene["scene_id"]
+            if ("scene", sid) not in seen:
+                result.append(("scene", scene_map[sid], 1))
+                seen.add(("scene", sid))
+        return result
+
     def _estimate_scroll_height(self) -> int:
-        """滚动区可见 4 排的期望高度（普通行 56 / 大卡 112，含间距）。
+        """滚动区可见 4 排的期望高度（普通行/场景 56、大卡 112，含间距）。
 
         与 _rebuild 同一套占位规则：span 占多列时卡片所在行高取该行
-        卡片的最大高度——此处简化为按卡序号累加各自高度；大卡把整行
+        卡片的最大高度——此处简化为按项序号累加各自高度；大卡把整行
         撑到 112，若同行还排了普通行，估值略高于实排（可接受，滚动区
         实际由布局撑开，估值只决定窗口外框）。
         """
-        entries = getattr(self, "_tray_entries", None) or []
         heights: list[int] = []
-        lookup = {d.did: d for d in self._devices}
-        for entry in entries:
-            dev = lookup.get(entry["did"])
-            if dev is None:
-                continue
-            span = max(1, min(int(entry.get("span") or 1),
-                              max(self._columns, 1)))
-            is_cuktech = dev.source == "local" and dev.is_cuktech
-            large = span >= 2 and is_cuktech
-            heights.append(112 if large else 56)
+        for kind, item, span in self._tray_items():
+            if kind == "device":
+                is_cuktech = item.source == "local" and item.is_cuktech
+                heights.append(112 if span >= 2 and is_cuktech else 56)
+            else:
+                heights.append(56)
             if len(heights) >= 4:
                 break
         if not heights:
@@ -523,23 +579,16 @@ class TrayQuickWindow(QDialog):
 
     def _rebuild(self) -> None:
         self._destroy_grid()
-        entries = getattr(self, "_tray_entries", None)
-        if not entries:
-            entries = self._tray_entries = tray_store.load_entries()
-        if not entries:
+        items = self._tray_items()
+        if not items:
             self._empty.show()
             self._scroll.hide()
             return
         self._empty.hide()
         self._scroll.show()
-        lookup = {d.did: d for d in self._devices}
-        cards = [lookup[e["did"]] for e in entries if lookup.get(e["did"])]
-        span_of = {e["did"]: max(1, min(int(e.get("span") or 1),
-                                        max(self._columns, 1)))
-                   for e in entries}
-        # 使用 QGridLayout + setColumnStretch 强制各列等宽，单卡也能保持列宽；
-        # span>1 的卡跨多列（rowspan/colspan 占位，跳过被占格子）
-        cols = self._columns
+        # 使用 QGridLayout + setColumnStretch 强制各列等宽；设备卡按 span
+        # 跨列（rowspan/colspan 占位，跳过被占格子），场景行固定 1 列。
+        cols = max(1, self._columns)
         self._grid = QGridLayout()
         self._grid.setContentsMargins(0, 0, 0, 0)
         for c in range(cols):
@@ -549,15 +598,18 @@ class TrayQuickWindow(QDialog):
         occupied: set[tuple[int, int]] = set()
         row = 0
         col = 0
-        for dev in cards:
-            span = max(1, min(span_of.get(dev.did, 1), cols))
+        for kind, item, span in items:
+            span = max(1, min(span, cols))
             # 跳到第一个能容纳 span 的空位
             while (row, col) in occupied or col + span > cols:
                 col += 1
                 if col >= cols:
                     row += 1
                     col = 0
-            widget = self._make_card(dev, span >= 2)
+            if kind == "device":
+                widget = self._make_card(item, span >= 2)
+            else:
+                widget = self._make_scene_row(item)
             self._grid.addWidget(widget, row, col, 1, span)
             for cc in range(col, col + span):
                 occupied.add((row, cc))
@@ -567,8 +619,11 @@ class TrayQuickWindow(QDialog):
                 col = 0
         self._list_lay.addLayout(self._grid)
         self._list_lay.addStretch(1)
-        online_dids = [d.did for d in cards
-                       if d.online and self._known_power.get(d.did) is None]
+        online_dids = [
+            item.did for kind, item, _ in items
+            if kind == "device" and item.online
+            and self._known_power.get(item.did) is None
+        ]
         if online_dids:
             self.refresh_power(online_dids)
 
@@ -848,9 +903,96 @@ class TrayQuickWindow(QDialog):
             return
         btn.set_busy(False)
 
+    # ---------- 场景行 ----------
+
+    def _make_scene_row(self, scene: SceneInfo) -> QFrame:
+        row = QFrame()
+        row.setObjectName("trayRow")
+        row.setAttribute(Qt.WA_StyledBackground, True)
+        row.setFixedHeight(56)
+        from PySide6.QtWidgets import QSizePolicy
+        row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        row.setStyleSheet(
+            f"QFrame#trayRow {{ background: {SiColors.CARD}; border: 1px solid {SiColors.LINE}; border-radius: 10px; }}"
+            f"QFrame#trayRow:hover {{ background: {SiColors.CARD_HOVER}; border-color: {SiColors.CARD_BORDER_HOVER}; }}")
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(10)
+
+        avail = self._card_text_width(True)
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        name = QLabel()
+        name.setFont(QFont("Microsoft YaHei UI", 10, QFont.Weight.DemiBold))
+        name.setStyleSheet(f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
+        name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._set_elided(name, scene.name, avail)
+        sub = QLabel()
+        sub.setFont(QFont("Microsoft YaHei UI", 8))
+        sub.setStyleSheet(f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 8pt;")
+        sub.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._set_elided(sub, scene.home_name or "手动场景", avail)
+        text_col.addWidget(name)
+        text_col.addWidget(sub)
+        lay.addLayout(text_col, stretch=1)
+
+        btn = QPushButton()
+        btn.setObjectName("sceneRunBtn")
+        btn.setFixedSize(28, 28)
+        btn.setIconSize(QSize(18, 18))
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setToolTip("执行场景")
+        self._apply_scene_btn(btn, busy=False)
+        btn.clicked.connect(lambda _, s=scene, b=btn: self._run_scene(s, b))
+        lay.addWidget(btn)
+        row._scene_id = scene.scene_id  # type: ignore[attr-defined]
+        return row
+
+    def _apply_scene_btn(self, btn: QPushButton, busy: bool) -> None:
+        btn.setEnabled(not busy)
+        if busy:
+            btn.setIcon(qta.icon('mdi.play', color=SiColors.ICON_DIM))
+            btn.setStyleSheet(
+                f"QPushButton#sceneRunBtn {{ background: {SiColors.SURFACE_PRESSED};"
+                f" border: none; border-radius: 14px; }}")
+            return
+        btn.setIcon(qta.icon('mdi.play', color=SiColors.WHITE))
+        btn.setStyleSheet(
+            f"QPushButton#sceneRunBtn {{ background: {SiColors.THEME}; border: none;"
+            f" border-radius: 14px; }}"
+            f"QPushButton#sceneRunBtn:hover {{ background: {SiColors.THEME_HOVER}; }}"
+            f"QPushButton#sceneRunBtn:pressed {{ background: {SiColors.THEME_DIM}; }}")
+
+    def _run_scene(self, scene: SceneInfo, btn: QPushButton) -> None:
+        # 与主界面场景卡一致：点击即执行（无二次确认），执行中置忙碌态
+        self._apply_scene_btn(btn, busy=True)
+        self._jobs.submit(
+            lambda: self._service.run_scene(scene),
+            on_success=lambda _, s=scene, b=btn: self._on_scene_done(s, b),
+            on_error=lambda e, s=scene, b=btn: self._on_scene_failed(s, b, e),
+        )
+
+    def _on_scene_done(self, scene: SceneInfo, btn: QPushButton) -> None:
+        import shiboken6
+
+        if not shiboken6.isValid(self) or not shiboken6.isValid(btn):
+            return
+        self._apply_scene_btn(btn, busy=False)
+        Toast.info(self, f"已执行场景「{scene.name}」", 2200)
+
+    def _on_scene_failed(self, scene: SceneInfo, btn: QPushButton, error: Exception) -> None:
+        import shiboken6
+
+        if not shiboken6.isValid(self) or not shiboken6.isValid(btn):
+            return
+        self._apply_scene_btn(btn, busy=False)
+        Toast.info(self, f"执行场景「{scene.name}」失败：{error}", 4000)
+
     def show_near_tray(self) -> None:
         """在托盘附近或屏幕右下角显示，显示前重建以保证与托盘存储一致。"""
         self._tray_entries = tray_store.load_entries()
+        self._tray_scenes = tray_store.load_scenes()
+        self._tray_order = tray_store.load_order()
         self._rebuild()
         # 顶部音频栏与语音输入条显隐需在计算弹出位置前确定，以便窗口高度正确
         self._update_audio_bar()

@@ -1,5 +1,5 @@
 # ============================================
-# MiHome-Windows .gitignore
+# MiHome-Ex .gitignore
 # ============================================
 
 # ---- 虚拟环境 ----
@@ -51,6 +51,48 @@ workbench.json
 settings.json
 # 原子写的临时残留（正常流程会被 os.replace 消费）
 *.json.tmp
+
+# ---- 环境秘密 ----
+.env
+.env.*
+.envrc
+# 公开的模板仍应入库
+!.env.example
+!.env.*.example
+
+# ---- 历史数据库 / WAL / SHM ----
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+
+# ---- 备份 / 转储 ----
+*.bak
+*.backup
+*.dump
+*.dmp
+
+# ---- 私钥与私钥导出格式 ----
+# 不忽略 *.pem：certifi 等公开 CA 包需要正常入库
+*.key
+*.p12
+*.pfx
+*.p8
+*.ppk
+*.jks
+*.keystore
+id_rsa
+id_ecdsa
+id_ed25519
+id_dsa
 
 # ---- 日志 ----
 *.log

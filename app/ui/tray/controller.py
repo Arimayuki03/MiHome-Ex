@@ -65,7 +65,7 @@ class TrayController:
         act_show = QAction("显示主窗口", menu)
         act_show.triggered.connect(self._show_main)
         menu.addAction(act_show)
-        act_manage = QAction("管理托盘设备", menu)
+        act_manage = QAction("管理托盘项目", menu)
         act_manage.triggered.connect(self._emit_manage)
         menu.addAction(act_manage)
         act_settings = QAction("设置", menu)

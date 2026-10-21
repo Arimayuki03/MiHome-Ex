@@ -37,8 +37,12 @@ def main() -> int:
     for name in (
         "_get_qr_login_data", "_complete_qr_login",
         "get_homes_list", "get_devices_list", "get_shared_devices_list",
+        "get_scenes_list", "run_scene",
     ):
         check(MijiaApiClass, name, "mijiaAPI")
+
+    # 上游版本号：service.api_version 读取它供关于页展示，缺失会让版本行少一段
+    check(mijia_api_module, "__version__", "mijiaAPI")
 
     # 设备控制接口与元数据字段
     from mijiaAPI import mijiaDevice
@@ -75,10 +79,19 @@ def main() -> int:
         if not hasattr(mijia_api_module, exc_name):
             failures.append(f"异常类缺失: {exc_name}")
 
-    # 适配层自身可加载（导入即验证）
+    # 适配层自身可加载（导入即验证），并确认集成门面新增入口齐全
     try:
+        from app.core.models import DeviceInfo
         from app.core.service import MijiaService, ServiceError
         assert MijiaService is not None and ServiceError is not None
+        for name in ("spec_has_published_functions", "scene_list",
+                     "run_scene", "api_version"):
+            check(MijiaService, name, "MijiaService")
+        if "spec_type" not in DeviceInfo.__dataclass_fields__:
+            failures.append("DeviceInfo: 缺少 spec_type 字段")
+        if MijiaService.api_version() != getattr(
+                mijia_api_module, "__version__", ""):
+            failures.append("MijiaService.api_version 未跟随实际安装版本")
     except Exception as exc:
         failures.append(f"app.core.service 加载失败: {exc}")
 

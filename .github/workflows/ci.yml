@@ -1,16 +1,24 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # MiHome-Ex CI：push/PR 跑测试套件，tag v* 触发完整构建并发布 Release。
 #
-# 测试均为脚本式 assert（python tests/xxx_test.py 直接运行），UI 套件
-# 离屏渲染（QT_QPA_PLATFORM=offscreen 自带回退，见 tests/conftest.py）。
+# 测试包含脚本式 assert 与 pytest 套件；UI 套件离屏渲染
+# （QT_QPA_PLATFORM=offscreen 自带回退，见 tests/conftest.py）。
+# 所有 run 块统一 pwsh，并启用原生命令失败传播，避免前一个 python/pip/ISCC
+# 失败后被最后一个成功命令掩盖。
 # 构建复用 build.ps1（Nuitka 主程序 + 内置 BLE 服务端扩展），编译产物
 # 经 Inno Setup 打安装包、Compress-Archive 打便携包，最后以 tag 版本号
 # 创建 Release 并附产物与 SHA-256。
 #
+# 发布门槛（任一失败都不进入 Release）：
+# - 三处版本（app/__init__.py、pyproject.toml、installer/version.ini）
+#   与 tag 完全一致；
+# - BLE 源码固定到 v1.2.0 提交，版本 1.2.0；
+# - 打包前检查 dist 内无运行数据/本机配置，默认模板必须是占位值；
+# - 打包后主程序/BLE 版本、三个产物与 SHA256SUMS 全部校验通过。
+#
 # 说明：
 # - BLE 服务端扩展依赖同级 cuktech-ble-server 仓库（build.ps1 约定），
-#   CI 里 checkout 到 ../cuktech-ble-server（私有 fork，用同 token 拉取）；
-#   缺失时构建仅警告跳过扩展，主程序照常出包。
+#   CI 里 checkout 到工作区 cuktech-ble-server（私有 fork，用同 token 拉取）。
 # - MSVC 环境由 ilammy/msvc-dev-cmd 激活（与 build.ps1 的 vcvars64 等效）。
 
 name: CI
@@ -26,6 +34,9 @@ jobs:
   test:
     name: 测试 (Python ${{ matrix.python }})
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     env:
       # runner 默认 cp1252：测试输出中文必须强制 UTF-8，否则 UnicodeEncodeError
       PYTHONUTF8: '1'
@@ -44,26 +55,46 @@ jobs:
 
       - name: 安装依赖
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
           pip install -e .
           pip install pytest
 
       - name: 静态冒烟（mijiaAPI 接口兼容自检）
-        run: python -m tests.smoke_test
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m tests.smoke_test
         env:
           PYTHONPATH: ${{ github.workspace }}
 
-      - name: 核心套件（client / facade / events / ble_server_manager）
+      - name: 核心套件（client / facade / events）
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           python tests/cuktech_client_test.py
           python tests/facade_test.py
           python tests/cuktech_events_test.py
-          python tests/ble_server_manager_test.py
         env:
           PYTHONPATH: ${{ github.workspace }}
 
+      # 这三个是 pytest 套件：直接 python 执行不会运行 test_* 用例。
+      - name: pytest 套件（ble_server_manager / stage_pending / tray_audio）
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pytest tests/ble_server_manager_test.py -q
+          python -m pytest tests/cuktech_stage_pending_test.py -q
+          python -m pytest tests/tray_audio_bar_test.py -q
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          QT_QPA_PLATFORM: offscreen
+
       - name: UI 套件（离屏渲染，暗/亮双主题）
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           python tests/cuktech_panel_test.py
           python tests/cuktech_history_test.py
           python tests/cuktech_port_detail_test.py
@@ -79,11 +110,36 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           QT_QPA_PLATFORM: offscreen
 
+      - name: 上游集成 / 场景托盘 / 发布安全
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python tests/upstream_integration_test.py
+          python tests/scene_tray_test.py
+          python tests/release_safety_test.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          QT_QPA_PLATFORM: offscreen
+
+      - name: 补充回归套件（凭据 / 隐藏 / 阶段脚本）
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python tests/cuktech_credentials_test.py
+          python tests/hide_no_func_test.py
+          python tests/cuktech_stage_script.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          QT_QPA_PLATFORM: offscreen
+
   build-release:
     name: 构建并发布
     if: startsWith(github.ref, 'refs/tags/v')
     needs: test
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     env:
       PYTHONUTF8: '1'
       PYTHONIOENCODING: utf-8
@@ -92,12 +148,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # BLE 服务端扩展源码（同级目录，build.ps1 约定路径 ../cuktech-ble-server）
-      - name: Checkout BLE 服务端扩展源
+      # BLE 服务端扩展源码（工作区内部 path，build.ps1 会回退到该位置）。
+      # v1.2.0 = 0cb099386fb6fc0e8efad745b2b62ebea8d54766
+      # 必须固定 commit：禁止浮动 main，避免把 v1.2.0 之后未发版的后端
+      # 改动悄悄带进 MiHome-Ex 发布包，保证 tag 构建可复现。
+      - name: Checkout BLE 服务端扩展源（固定 v1.2.0）
         uses: actions/checkout@v4
         with:
           repository: Arimayuki03/cuktech-ble-server
-          ref: main
+          ref: 0cb099386fb6fc0e8efad745b2b62ebea8d54766
           token: ${{ secrets.GITHUB_TOKEN }}
           path: cuktech-ble-server
 
@@ -109,6 +168,66 @@ jobs:
       - name: 激活 MSVC 编译环境
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: 校验三处版本、tag 与 BLE 固定点
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $tag = "${{ github.ref_name }}"
+          if ($tag -notmatch '^v([0-9]+\.[0-9]+\.[0-9]+)$') {
+            throw "tag 必须为 vX.Y.Z：$tag"
+          }
+          $expected = $Matches[1]
+
+          $appHits = @(Select-String -Path 'app\__init__.py' -Pattern '^__version__\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*(?:#.*)?$')
+          if ($appHits.Count -ne 1) { throw "app/__init__.py 必须只有一行 __version__ = 'x.y.z'" }
+          $appVersion = $appHits[0].Matches[0].Groups[1].Value
+
+          function Get-ProjectVersion([string]$path) {
+            $section = ''
+            $versions = @()
+            foreach ($raw in Get-Content -LiteralPath $path -Encoding UTF8) {
+              if ($raw -match '^\[([^\]]+)\]\s*(?:#.*)?$') {
+                $section = $Matches[1].Trim()
+                continue
+              }
+              if ($section -eq 'project' -and $raw.Trim() -match '^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*(?:#.*)?$') {
+                $versions += $Matches[1]
+              }
+            }
+            if ($versions.Count -ne 1) { throw "$path 的 [project] 段必须只有一行 version = 'x.y.z'" }
+            return $versions[0]
+          }
+
+          $pyVersion = Get-ProjectVersion 'pyproject.toml'
+          $iniHits = @(Select-String -Path 'installer\version.ini' -Pattern '^\s*value\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)\s*$')
+          if ($iniHits.Count -ne 1) { throw "installer/version.ini 必须只有一行 value=x.y.z" }
+          $iniVersion = $iniHits[0].Matches[0].Groups[1].Value
+
+          foreach ($pair in @(@('tag', $expected), @('app/__init__.py', $appVersion), @('pyproject.toml', $pyVersion), @('installer/version.ini', $iniVersion))) {
+            if ($pair[1] -ne $expected) {
+              throw "版本不一致：$($pair[0])=$($pair[1])，tag=v$expected"
+            }
+          }
+          Write-Host "三处版本与 tag 一致：$expected"
+
+          $bleHeadRaw = & git -C 'cuktech-ble-server' rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw "无法读取 BLE 源码 HEAD" }
+          $bleHead = $bleHeadRaw.Trim()
+          if ($bleHead -ne '0cb099386fb6fc0e8efad745b2b62ebea8d54766') {
+            throw "BLE 源码 HEAD=$bleHead，不是 v1.2.0 固定提交"
+          }
+          foreach ($file in @('ha_server.py', 'pyproject.toml', 'requirements.txt', 'config.yaml.example')) {
+            if (-not (Test-Path (Join-Path 'cuktech-ble-server' $file))) {
+              throw "BLE 源码缺少 $file"
+            }
+          }
+          $serverVersion = Get-ProjectVersion 'cuktech-ble-server\pyproject.toml'
+          if ($serverVersion -ne '1.2.0') {
+            throw "BLE 服务端版本必须为 1.2.0，实际：$serverVersion"
+          }
+          Write-Host "BLE 后端固定 v1.2.0（$bleHead）"
+
       # 预建 .venv 并把依赖一次装齐（主程序 + Nuitka + BLE 服务端扩展）。
       # 必须用 setup-python 的 3.12 建 venv：runner 的 py launcher 会解析到
       # 系统最新的 Python 3.14，build.ps1 若自建 venv，服务端扩展的 winrt-*
@@ -118,6 +237,8 @@ jobs:
       - name: 预建 venv 并安装依赖（主程序 + Nuitka + BLE 服务端）
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m venv .venv
           .venv\Scripts\python.exe -m pip install --upgrade pip
           .venv\Scripts\pip.exe install -e .
@@ -128,19 +249,51 @@ jobs:
 
       - name: 构建（Nuitka 主程序 + BLE 服务端扩展）
         shell: pwsh
-        run: .\build.ps1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          .\build.ps1
 
-      - name: 校验产物版本与 tag 一致
+      - name: 校验产物版本（主程序 + BLE）
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $tag = "${{ github.ref_name }}".TrimStart('v')
-          $ver = (Get-Item 'dist\MiHome-Ex.exe').VersionInfo.ProductVersion
-          if ($ver -notlike "$tag*") { throw "tag $tag 与产物版本 $ver 不一致" }
+          function Assert-ProductVersion([string]$label, [string]$actual, [string]$expected) {
+            $parsed = $null
+            if (-not [version]::TryParse($actual, [ref]$parsed)) {
+              throw "$label 版本无法解析：$actual"
+            }
+            $want = [version]$expected
+            if ($parsed.Major -ne $want.Major -or $parsed.Minor -ne $want.Minor -or $parsed.Build -ne $want.Build) {
+              throw "$label 版本 $actual 与期望 $expected 不一致"
+            }
+          }
+          $mainVer = (Get-Item 'dist\MiHome-Ex.exe').VersionInfo.ProductVersion
+          $bleVer = (Get-Item 'dist\ble-server\CuktechBleServer.exe').VersionInfo.ProductVersion
+          Assert-ProductVersion '主程序' $mainVer $tag
+          Assert-ProductVersion 'BLE 服务端' $bleVer '1.2.0'
+          Write-Host "产物版本校验通过：主程序 $mainVer，BLE $bleVer"
+
+      - name: 隐私检查（运行数据/本机配置禁入产物）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          .venv\Scripts\python.exe tests\release_safety_test.py `
+            --artifact-dir dist `
+            --template cuktech-ble-server\config.yaml.example
 
       - name: 打 Inno Setup 安装包（完整版 + 客户端版）
         shell: pwsh
         run: |
-          $iscc = Get-ChildItem "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if (-not (Test-Path 'dist\ble-server\CuktechBleServer.exe')) {
+            throw "完整版缺少 dist\ble-server\CuktechBleServer.exe，拒绝打包"
+          }
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
                               "$env:ProgramFiles\Inno Setup 6\ISCC.exe" -ErrorAction SilentlyContinue |
                    Select-Object -First 1
           if (-not $iscc) {
@@ -162,6 +315,8 @@ jobs:
       - name: 打便携版 zip 并计算 SHA-256
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $tag = "${{ github.ref_name }}".TrimStart('v')
           Compress-Archive -Path 'dist\*' -DestinationPath "installer\Output\MiHome-Ex-$tag-x64-portable.zip" -Force
           $files = Get-ChildItem 'installer\Output' -File |
@@ -172,9 +327,73 @@ jobs:
           $sums | Set-Content installer\Output\SHA256SUMS.txt
           Get-Content installer\Output\SHA256SUMS.txt
 
+      - name: 打包后完整校验（版本 / 三个产物 / SHA256SUMS）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          function Assert-ProductVersion([string]$label, [string]$actual, [string]$expected) {
+            $parsed = $null
+            if (-not [version]::TryParse($actual, [ref]$parsed)) {
+              throw "$label 版本无法解析：$actual"
+            }
+            $want = [version]$expected
+            if ($parsed.Major -ne $want.Major -or $parsed.Minor -ne $want.Minor -or $parsed.Build -ne $want.Build) {
+              throw "$label 版本 $actual 与期望 $expected 不一致"
+            }
+          }
+          $mainVer = (Get-Item 'dist\MiHome-Ex.exe').VersionInfo.ProductVersion
+          $bleVer = (Get-Item 'dist\ble-server\CuktechBleServer.exe').VersionInfo.ProductVersion
+          Assert-ProductVersion '主程序' $mainVer $tag
+          Assert-ProductVersion 'BLE 服务端' $bleVer '1.2.0'
+
+          $required = @(
+            "MiHome-Ex-setup-$tag.exe",
+            "MiHome-Ex-setup-$tag-client.exe",
+            "MiHome-Ex-$tag-x64-portable.zip"
+          )
+          foreach ($name in $required) {
+            $path = Join-Path 'installer\Output' $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "缺少产物：$name" }
+            if ((Get-Item -LiteralPath $path).Length -le 0) { throw "产物为空：$name" }
+          }
+
+          $sumsPath = 'installer\Output\SHA256SUMS.txt'
+          if (-not (Test-Path -LiteralPath $sumsPath -PathType Leaf)) { throw "缺少 SHA256SUMS.txt" }
+          $sumLines = @(Get-Content -LiteralPath $sumsPath | Where-Object { $_.Trim() })
+          if ($sumLines.Count -ne 3) { throw "SHA256SUMS.txt 应包含 3 个产物，实际 $($sumLines.Count)" }
+          foreach ($line in $sumLines) {
+            if ($line -notmatch '^([0-9A-Fa-f]{64})\s{2}(.+)$') { throw "SHA256SUMS 行格式错误：$line" }
+            $expectedHash = $Matches[1].ToUpperInvariant()
+            $fileName = $Matches[2].Trim()
+            $filePath = Join-Path 'installer\Output' $fileName
+            if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) { throw "SHA256SUMS 指向不存在的文件：$fileName" }
+            $actualHash = (Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash
+            if ($actualHash -ne $expectedHash) { throw "SHA256 不匹配：$fileName" }
+          }
+
+          $allowed = @($required + 'SHA256SUMS.txt')
+          $extra = @(Get-ChildItem 'installer\Output' -File | Where-Object { $_.Name -notin $allowed })
+          if ($extra.Count -gt 0) { throw "installer/Output 存在非预期文件：$($extra.Name -join ', ')" }
+          Write-Host "打包后校验通过：主程序 $mainVer，BLE $bleVer，三个产物 + SHA256SUMS 完整"
+
+      - name: 打包后隐私检查（便携 ZIP / Release 输出）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          .venv\Scripts\python.exe tests\release_safety_test.py `
+            --portable-zip "installer\Output\MiHome-Ex-$tag-x64-portable.zip" `
+            --release-output installer\Output `
+            --template cuktech-ble-server\config.yaml.example
+
       - name: 生成发布说明并创建 Release
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $tag = "${{ github.ref_name }}"
           $ver = $tag.TrimStart('v')
           $notes = "RELEASE_NOTES_$ver.md"

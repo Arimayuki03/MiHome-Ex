@@ -215,7 +215,7 @@ class SettingsDialog(OverlayDialog):
         return scroll
 
     def _build_appearance_page(self) -> QScrollArea:
-        """主题界面：主题配色、界面缩放比例、小爱悬浮对话按钮。"""
+        """主题界面：主题配色、界面缩放比例、小爱悬浮对话按钮、场景选项卡。"""
         # ── 主题配色下拉（跟随系统 / 浅色 / 深色） ──
         self._theme_item, self._theme_label, self._theme_desc, theme_row = self._make_item(
             "主题配色",
@@ -263,7 +263,18 @@ class SettingsDialog(OverlayDialog):
         _sync_switch(self._voice_fab_toggle)
         fab_row.addWidget(self._voice_fab_toggle)
 
-        return self._build_scroll([self._theme_item, self._scale_item, self._fab_item])
+        # ── 显示场景选项卡 ──
+        self._scene_item, self._scene_label, self._scene_desc, scene_row = self._make_item(
+            "显示场景选项卡",
+            "在主页房间选项卡左侧显示「场景」入口，可一键执行米家 APP 中创建的手动场景")
+        self._scene_toggle = themed_switch()
+        self._scene_toggle.setChecked(settings_store.get_show_scene_tab())
+        _sync_switch(self._scene_toggle)
+        scene_row.addWidget(self._scene_toggle)
+
+        return self._build_scroll([
+            self._theme_item, self._scale_item, self._fab_item, self._scene_item,
+        ])
 
     def _build_features_page(self) -> QScrollArea:
         """应用功能：开机自启动、默认指挥的音箱、系统托盘、托盘方式启动、隐藏无功能设备。"""
@@ -331,12 +342,12 @@ class SettingsDialog(OverlayDialog):
         self._ble_url_item, self._ble_url_label, self._ble_url_desc, url_row = \
             self._make_item(
                 "充电器远程后端",
-                "填充电器后端地址（如 http://192.168.6.2:8199）即切换为"
+                "填充电器后端地址（如 http://<backend-host>:8199）即切换为"
                 "分离式部署：本软件只做客户端，不再随程序启动内置服务，"
                 "电脑关机后充电器数据与 Home Assistant 自动化不中断。"
                 "留空则使用本机内置服务。改后需重启软件生效")
         self._ble_url_edit = QLineEdit()
-        self._ble_url_edit.setPlaceholderText("http://192.168.6.2:8199")
+        self._ble_url_edit.setPlaceholderText("http://<backend-host>:8199")
         self._ble_url_edit.setText(settings_store.get_ble_server_url())
         self._ble_url_edit.setClearButtonEnabled(True)
         self._ble_url_edit.setFixedWidth(220)
@@ -457,9 +468,11 @@ class SettingsDialog(OverlayDialog):
     def _apply_styles(self) -> None:
         """主题相关内联样式：构造与 retheme 共用。"""
         panel_card = f"QFrame {{ background: {SiColors.CARD}; border-radius: 10px; }}"
-        for item in (self._ble_item, self._cred_item, self._tray_item, self._start_min_item, self._fab_item,
-                     self._theme_item, self._autostart_item, self._speaker_item,
-                     self._hide_item, self._scale_item, self._update_item):
+        for item in (self._ble_item, self._ble_url_item, self._cred_item,
+                     self._tray_item, self._start_min_item, self._fab_item,
+                     self._scene_item, self._theme_item, self._autostart_item,
+                     self._speaker_item, self._hide_item, self._scale_item,
+                     self._update_item):
             item.setStyleSheet(panel_card)
             # 高度按内容自适应（不固定）：长描述换行后行自然变高，
             # 不会被固定 64px 裁掉；短描述保持紧凑。QScrollArea 负责
@@ -467,14 +480,18 @@ class SettingsDialog(OverlayDialog):
             item.setMinimumHeight(0)
         self._title_label.setStyleSheet(
             f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
-        for label in (self._ble_label, self._tray_label, self._start_min_label, self._fab_label,
-                      self._theme_label, self._autostart_label, self._speaker_label,
-                      self._hide_label, self._scale_label, self._update_label):
+        for label in (self._ble_label, self._ble_url_label, self._cred_label,
+                      self._tray_label, self._start_min_label, self._fab_label,
+                      self._scene_label, self._theme_label, self._autostart_label,
+                      self._speaker_label, self._hide_label, self._scale_label,
+                      self._update_label):
             label.setStyleSheet(
                 f"color: {SiColors.TEXT_PRIMARY}; background: transparent; font-size: 10pt;")
-        for desc in (self._ble_desc, self._tray_desc, self._start_min_desc, self._fab_desc,
-                     self._theme_desc, self._autostart_desc, self._speaker_desc,
-                     self._hide_desc, self._scale_desc, self._update_desc):
+        for desc in (self._ble_desc, self._ble_url_desc, self._cred_desc,
+                     self._tray_desc, self._start_min_desc, self._fab_desc,
+                     self._scene_desc, self._theme_desc, self._autostart_desc,
+                     self._speaker_desc, self._hide_desc, self._scale_desc,
+                     self._update_desc):
             desc.setStyleSheet(
                 f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 7pt;")
         self._done_btn.setStyleSheet(
@@ -626,6 +643,7 @@ class SettingsDialog(OverlayDialog):
         if self._devices:
             settings_store.set_voice_fab_enabled(self._voice_fab_toggle.isChecked())
         settings_store.set_hide_no_func_devices(self._hide_toggle.isChecked())
+        settings_store.set_show_scene_tab(self._scene_toggle.isChecked())
         settings_store.set_check_update_enabled(self._update_toggle.isChecked())
         settings_store.set_theme_mode(self._pending_mode)
         # 界面缩放：记录是否变化，供保存后提示重启

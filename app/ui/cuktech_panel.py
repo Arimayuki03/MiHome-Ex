@@ -16,7 +16,7 @@ push_* 注入方法）优先实时更新功率/端口/限额展示；卡片与�
 - 常量与端口元数据
 - PowerCurveWidget —— QPainter 自绘单线功率曲线（简单场景复用件；
   面板「实时」页曲线已升级为 cuktech_visuals.MultiMetricCurve）
-- CuktechDeviceCard —— 216×92 专用卡片（状态点/总功率/总开关），自轮询状态
+- CuktechDeviceCard —— 200×92 专用卡片（状态点/总功率/总开关），自轮询状态
 - CuktechPanel —— 详情面板（分区 Tab：实时/历史/统计/设备设置），
   由 DeviceDetailDialog 经 panel_factory 装载，接口对齐 WorkbenchPanel；
   Tab 导航沿用主窗口房间筛选的 themed_tab_button 自绘选中态 +
@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
 
 from app.core.models import DeviceInfo
 from app.siui.components.container import SiRowCard
+from app.ui.device_card import _CARD_FIXED_HEIGHT, _CARD_FIXED_WIDTH
 from app.ui.cuktech_history import (
     EnergySummaryWidget,
     SessionCurveWidget,
@@ -87,9 +88,8 @@ if TYPE_CHECKING:
 # 常量与端口元数据
 # ----------------------------------------------------------------------------
 
-# 卡片尺寸与通用 DeviceCard 完全一致：网格列宽计算假设等宽，无需改动
-_CARD_FIXED_WIDTH = 216
-_CARD_FIXED_HEIGHT = 92
+# 卡片尺寸直接复用通用 DeviceCard 常量（上游布局修复后为 200×92）：
+# 网格列宽计算假设等宽，两处各写一个数值会在布局调整时漂移。
 _POWER_BTN_SIZE = 36
 
 # 卡片与面板共用的状态轮询周期（BLE 网关 /api/status 变化才重建，轮询廉价）

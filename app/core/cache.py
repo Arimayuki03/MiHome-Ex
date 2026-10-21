@@ -13,7 +13,9 @@ import json
 from app.core import _json_store
 from app.core.models import DeviceInfo
 
-_CACHE_VERSION = 2  # v2：DeviceInfo 新增 source（设备来源）字段，vars() 序列化随之多出该键，旧版程序读到应整体丢弃而非反序列化报错
+# 版本 3：同时包含 fork 的 source（设备来源）与上游 5.x 的 spec_type。
+# 旧版缓存缺任一字段都会让设备来源或“隐藏无功能设备”误判，直接作废重拉。
+_CACHE_VERSION = 3
 _FILENAME = "devices_cache.json"
 
 
