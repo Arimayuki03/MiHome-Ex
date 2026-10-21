@@ -797,13 +797,17 @@ def test_build_script_contract() -> None:
     assert "config.yaml.example" in script
     assert "--include-data-files=$ServerTemplate=config.default.yaml" in script
     assert "1.1.5" not in script, "BLE 版本资源不得再硬编码 1.1.5"
+    assert "90dc6bc983d833fd60df6db2da32cf779046a043" in script, \
+        "build.ps1 必须校验公开 v1.2.0 固定提交"
     assert "$ServerCfg" not in script, "不得保留旧的本机配置回退变量"
     assert not re.search(r"config\.ya?ml(?!\.example)", script), "build.ps1 不得引用本机运行配置"
 
 
 def test_ci_workflow_contract() -> None:
     ci = CI_WORKFLOW.read_text(encoding="utf-8")
-    assert "0cb099386fb6fc0e8efad745b2b62ebea8d54766" in ci
+    assert "90dc6bc983d833fd60df6db2da32cf779046a043" in ci
+    assert "0cb099386fb6fc0e8efad745b2b62ebea8d54766" not in ci, \
+        "CI 不得继续固定旧 BLE 提交"
     assert not re.search(r"^\s*ref:\s*main\s*$", ci, re.MULTILINE), "BLE checkout 不得浮动 main"
     assert "测试包含脚本式 assert 与 pytest 套件" in ci, "头部测试说明必须与实际入口一致"
     assert "测试均为脚本式 assert" not in ci

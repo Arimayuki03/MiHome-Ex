@@ -65,7 +65,7 @@ python -m pytest tests/tray_audio_bar_test.py -q
 
 尤其不要用 `python tests/ble_server_manager_test.py`、`python tests/tray_audio_bar_test.py` 判断通过——它们会以 0 退出但不执行断言。
 
-`ble_server_manager_test.py` 已改为自包含：测试使用 `tmp_path`/`monkeypatch` 伪造开发态和打包态路径，探活也使用内存桩，**不需要本机存在 `cuktech-ble-server` 仓库，也不会启动真实 BLE 后端**。真实发布构建由 CI 单独固定检出 v1.2.0 服务端源码，仅用于编译发布包，与本地单元测试的前置条件无关。
+`ble_server_manager_test.py` 已改为自包含：测试使用 `tmp_path`/`monkeypatch` 伪造开发态和打包态路径，探活也使用内存桩，**不需要本机存在 `cuktech-ble-server` 仓库，也不会启动真实 BLE 后端**。真实发布构建由 CI 单独固定检出 v1.2.0 服务端源码（公开提交 `90dc6bc983d833fd60df6db2da32cf779046a043`），仅用于编译发布包，与本地单元测试的前置条件无关。
 
 ## 说明
 

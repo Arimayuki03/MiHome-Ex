@@ -1,4 +1,4 @@
-﻿# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 MiHome-Ex contributors
 <#
 .SYNOPSIS
@@ -365,6 +365,7 @@ if (-not (Test-Path (Join-Path $ServerRoot "ha_server.py"))) {
 }
 $ServerVenvPy = Join-Path $ServerRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $ServerVenvPy)) { $ServerVenvPy = $Python }
+$ExpectedBleCommit = "90dc6bc983d833fd60df6db2da32cf779046a043"
 $ServerExe = "dist\ble-server\CuktechBleServer.exe"
 if ($ClientOnly) {
     # 客户端版：确保产物不含旧一轮构建残留的 ble-server\（安装包
@@ -380,6 +381,19 @@ if ($ClientOnly) {
         exit 1
     }
 
+    # 完整版只接受可追溯的公开 v1.2.0 提交。这样本机残留的旧版本
+    # dist、不可追溯镜像或浮动分支都不会被误当作发布输入。
+    $BleHeadRaw = & git -C $ServerRoot rev-parse HEAD 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $BleHeadRaw) {
+        Write-Host "[ERROR] 无法从 BLE 服务端源码读取 git HEAD；完整版必须使用可追溯的公开源码。" -ForegroundColor Red
+        exit 1
+    }
+    $BleHead = ([string]$BleHeadRaw).Trim()
+    if ($BleHead -ne $ExpectedBleCommit) {
+        Write-Host "[ERROR] BLE 服务端 HEAD=$BleHead，不是固定提交 $ExpectedBleCommit。" -ForegroundColor Red
+        exit 1
+    }
+
     try {
         $ServerTemplate = Get-ServerConfigTemplate -ServerRoot $ServerRoot
         Assert-ServerConfigTemplate -Path $ServerTemplate
@@ -388,7 +402,7 @@ if ($ClientOnly) {
         Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
         exit 1
     }
-    Write-Host "  BLE server version: $ServerVersion" -ForegroundColor Gray
+    Write-Host "  BLE server version: $ServerVersion ($BleHead)" -ForegroundColor Gray
 
     # 模板必须已入库且无未提交修改，防止本机改动混入发布包。
     if (Test-Path (Join-Path $ServerRoot ".git")) {

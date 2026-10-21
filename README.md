@@ -177,7 +177,7 @@ cd MiHome-Ex
 
 构建与运行时版本以 `app/__init__.py` 的 `__version__` 为唯一信源；发布时必须同步 `installer/version.ini`（安装包显示名与文件名）和 `pyproject.toml`（Python 包元数据），并保证三处版本与 Git tag 一致。构建参数（打包资源清单、图标、排除项等）集中维护在 `build.ps1` 的 `$NuitkaArgs`；`build_msvc.bat` 只是转发到它的双击入口。安装包用 Inno Setup 编译 `installer\MiHome-Ex.iss`。
 
-内置 BLE 服务端的配置模板只允许使用受版本控制的公开 `config.yaml.example`，不会读取或打包本机真实 `config.yaml`；服务端二进制版本从服务端仓库的 `pyproject.toml` 读取，避免继续写入旧版本资源。
+内置 BLE 服务端的配置模板只允许使用受版本控制的公开 `config.yaml.example`，不会读取或打包本机真实 `config.yaml`；服务端二进制版本从服务端仓库的 `pyproject.toml` 读取，避免继续写入旧版本资源。当前发布构建固定公开的 `cuktech-ble-server` v1.2.0 提交 `90dc6bc983d833fd60df6db2da32cf779046a043`；本地旧 `dist` 或其他不可追溯的后端镜像不得作为发布输入。
 
 CI 在干净的 Windows runner 上完成测试与构建，产出完整版安装包、客户端版安装包、便携 zip 和 `SHA256SUMS.txt` 四个发布资产。以历史 tag 构建为参考，整条流水线约 40 分钟，实际耗时会随 runner、依赖下载和编译情况变化，不作保证。本地首次构建同样需要较长时间，具体视机器和依赖下载而定。
 
@@ -268,7 +268,7 @@ LICENSE                         # GPL-3.0 许可证
 | `settings.json` | 应用设置（主题、缩放、托盘、场景入口、自启动等） |
 | `tray.json` | 托盘快捷控制面板的设备/场景项目与统一显示顺序；兼容旧版格式 |
 | `workbench.json` | 工作台（设备详情页）的自定义布局 |
-| `devices_cache.json` | 设备列表与状态缓存，启动时优先从缓存加载以加快首屏显示；0.6.0 首次启动会重新拉取旧版缓存 |
+| `devices_cache.json` | 设备列表与状态缓存，启动时优先从缓存加载以加快首屏显示；0.6.x 首次启动会重新拉取旧版缓存 |
 | `ble-server/` | 内置 BLE 服务端数据（`config.yaml`、充电历史 `port_history.db`） |
 
 > 路径中的 `%LOCALAPPDATA%` 通常为 `C:\Users\<用户名>\AppData\Local`。
