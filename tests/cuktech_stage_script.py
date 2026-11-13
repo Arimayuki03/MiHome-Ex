@@ -163,8 +163,11 @@ def test_stage_no_clip() -> None:
             app.processEvents()
             img = stage.grab().toImage()
             assert not _image_is_blank(img), f"{w}x{h} 渲染空白"
-            # 内容 = 显著偏离背景主色的像素（ΔRGB 通道差合计 > 60）——
-            # 径向光晕的淡染(Δ≈20)不算内容，只有机身/条/文本/徽标算
+            # 内容 = 显著偏离背景主色的像素（ΔRGB 通道差合计 > 72）——
+            # 径向光晕的淡染(Δ≈20)与深色主题背景顶部的渐变(Δ≈69-70)
+            # 都不算内容，只有机身/条/文本/徽标算（Δ 通常 >100）。
+            # 阈值不能回收：0.7.0 主题修复后深色主题在测试里才真正生效，
+            # 旧阈值 60 会把背景渐变误判为顶部内容。
             counts: dict[int, int] = {}
             for y in range(img.height()):
                 for x in range(img.width()):
@@ -176,7 +179,7 @@ def test_stage_no_clip() -> None:
 
             def _is_content(c) -> bool:
                 return (abs(c.red() - bg_val[0]) + abs(c.green() - bg_val[1])
-                        + abs(c.blue() - bg_val[2])) > 60
+                        + abs(c.blue() - bg_val[2])) > 72
 
             top = next(y for y in range(img.height())
                        if any(_is_content(img.pixelColor(x, y))
@@ -220,16 +223,19 @@ def test_stage_bar_pixels(theme: str) -> None:
     stage.show()
     app.processEvents()
     img = stage.grab().toImage()
+    # grab() 返回设备像素图：坐标要乘 dpr，否则 125%/150% 缩放下会采样到
+    # 错误的区域（CI 是 100% 所以历史上没暴露）
+    dpr = img.devicePixelRatio()
     # C1 功率文本中心（盒内 (274.5+35, 34+4+11) → 画布 +51.5）：
     # 7.1W 时白色粗体文本应落在机身右缘外侧的该位置
-    cx = int(_PVAL_X + _PVAL_W / 2)
-    cy = int(51.5 + _BAR_Y[1] + 4.0 + _PVAL_H / 2)
+    cx = int((_PVAL_X + _PVAL_W / 2) * dpr)
+    cy = int((51.5 + _BAR_Y[1] + 4.0 + _PVAL_H / 2) * dpr)
     center = img.pixelColor(cx, cy)
     # 功率文本是白色粗体，背景是深色面板——亮度应显著偏高
     v = center.red() + center.green() + center.blue()
     assert v > 200, f"[{theme}] C1 功率文本区域疑似未绘制: {center.name()}"
-    # 文本右缘不出条尾（盒内 371.5 → 画布 423）
-    assert cx + _PVAL_W / 2 <= 423
+    # 文本右缘不出条尾（盒内 371.5 → 画布 423，逻辑坐标）
+    assert _PVAL_X + _PVAL_W / 2 + _PVAL_W / 2 <= 423
     stage.hide()
     stage.deleteLater()
     print(f"3. 舞台 C1 功率文本位置/亮度像素验证 OK [{theme}]")
@@ -249,13 +255,15 @@ def test_stage_idle(theme: str) -> None:
     assert stage._charging is True
     img = stage.grab().toImage()
     assert not _image_is_blank(img), f"[{theme}] 舞台渲染空白"
-    # 空载同一位置充电中是白色文本、空载后是机身像素——断言语义：
-    # 文本框（70×22）内"近白"像素数充电态显著多于空载态。机身银色
-    # 装饰环亮度可达 ~717，但不是白（RGB 通道均衡）；白色粗体文本
-    # 会有大量 >=730 的近白像素，阈值取 720 分开两种材质。
-    cx0 = int(_PVAL_X)
-    cy0 = int(51.5 + _BAR_Y[1] + _PVAL_DY)
-    pw, ph = int(_PVAL_W), int(_PVAL_H)
+    # 空载同一位置充电中是白色文本、空载后是机身/背景像素——断言语义：
+    # 文本框（70×22）内"近白"像素数充电态显著多于空载态。阈值取 740：
+    # 浅色主题窗口背景 #EFEFEF 三通道和 717，白色粗体文本为 765，
+    # 两者能分开；深色主题背景更暗，同样适用。0.7.0 主题修复后浅色
+    # 主题才真正生效，旧阈值 720 会把浅色背景算成"近白"。
+    dpr = img.devicePixelRatio()
+    cx0 = int(_PVAL_X * dpr)
+    cy0 = int((51.5 + _BAR_Y[1] + _PVAL_DY) * dpr)
+    pw, ph = int(_PVAL_W * dpr), int(_PVAL_H * dpr)
 
     def _near_white_count() -> int:
         im = stage.grab().toImage()
@@ -263,7 +271,7 @@ def test_stage_idle(theme: str) -> None:
         for x in range(cx0, cx0 + pw):
             for y in range(cy0, cy0 + ph):
                 c = im.pixelColor(x, y)
-                if c.red() + c.green() + c.blue() >= 720:
+                if c.red() + c.green() + c.blue() >= 740:
                     n += 1
         return n
 
