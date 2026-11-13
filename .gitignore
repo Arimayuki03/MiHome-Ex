@@ -20,6 +20,12 @@ dist/
 build/
 build_nuitka/
 *.spec
+# 构建期缓存与崩溃报告（Nuitka / pip）
+.nuitka-cache/
+.pipcache/
+.tmp/
+nuitka-crash-report.xml
+build_log*.txt
 
 # ---- IDE / 编辑器 ----
 .vscode/
@@ -49,6 +55,10 @@ icons/
 tray.json
 workbench.json
 settings.json
+board.json
+schedules.json
+device_names.json
+product_names.json
 # 原子写的临时残留（正常流程会被 os.replace 消费）
 *.json.tmp
 
@@ -98,6 +108,9 @@ id_dsa
 *.log
 logs/
 
+# 单实例锁文件（run.py 运行时生成，退出后可能残留）
+MiHome-Windows.lock
+
 # ---- 测试覆盖率 ----
 .coverage
 htmlcov/
@@ -108,3 +121,5 @@ installer/Output/
 
 # ---- Mimosa 安全钩子的本地状态（不入库） ----
 .mimosa/
+# ---- 本地 AI 工作区（会话记忆 / 临时探针，仅本机使用，绝不提交）----
+.workbuddy/

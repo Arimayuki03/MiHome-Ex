@@ -334,7 +334,9 @@ def test_product_page_timeout_once() -> None:
         assert service.product_page_name("m.unknown") is None
     finally:
         requests.get = original
-    assert len(calls) == 1, f"超时失败应只请求一次: {calls}"
+    # 上游 0.5.0：主路径 /p/ 失败后回退 /spec/ 查商品名，共两次请求
+    assert len(calls) == 2, f"超时失败应按主路径+回退各请求一次: {calls}"
+    assert any("/p/" in c for c in calls) and any("/spec/" in c for c in calls)
     assert service.has_product_page_name("m.unknown") is True
     assert service.cached_product_page_names(["m.unknown"]) == {}
     check("产品页名称超时失败只请求一次并记忆 None")

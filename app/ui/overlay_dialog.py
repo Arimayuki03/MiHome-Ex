@@ -9,7 +9,7 @@
 定位面板。
 """
 
-from PySide6.QtCore import QPropertyAnimation, Qt
+from PySide6.QtCore import QPropertyAnimation, QTimer, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QDialog, QFrame, QPushButton
 from app.ui.si_theme import SiColors
@@ -46,9 +46,11 @@ class OverlayDialog(QDialog):
 
     def _close_button_qss(self) -> str:
         return (
-            f"QPushButton {{ background: {SiColors.SURFACE}; border: none;"
+            f"QPushButton {{ background: {SiColors.CTRL_BG};"
+            f" border: 1px solid {SiColors.CTRL_BORDER};"
             f" border-radius: 14px; color: {SiColors.TEXT_PRIMARY}; }}"
-            f"QPushButton:hover {{ background: {SiColors.DANGER}; color: {SiColors.WHITE}; }}")
+            f"QPushButton:hover {{ background: {SiColors.DANGER};"
+            f" border-color: {SiColors.DANGER}; color: {SiColors.WHITE}; }}")
 
     def _make_close_button(self) -> QPushButton:
         button = QPushButton("✕")
@@ -89,6 +91,18 @@ class OverlayDialog(QDialog):
         anim.setEndValue(1.0)
         anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
         self._fade_anim = anim
+        # 兜底：淡入依赖动画真正跑起来。若动画因窗口管理器/合成器原因
+        # 没执行，窗口会永远停在全透明状态——表现为"对话框打不开"。
+        # 400ms 后强制复位为不透明（正在淡出时不动，避免打架）。
+        QTimer.singleShot(400, self._ensure_visible_opacity)
+
+    def _ensure_visible_opacity(self) -> None:
+        import shiboken6
+
+        if not shiboken6.isValid(self) or self._closing:
+            return
+        if self.windowOpacity() < 0.99:
+            self.setWindowOpacity(1.0)
 
     def retheme(self) -> None:
         """主题切换：重设面板底色（子类覆写以扩展各自内联样式刷新）。
@@ -116,7 +130,16 @@ class OverlayDialog(QDialog):
             anim.setDuration(100)
             anim.setStartValue(self.windowOpacity())
             anim.setEndValue(0.0)
-            anim.finished.connect(lambda: QDialog.done(self, result))
+
+            def _finish() -> None:
+                # 淡出这 100ms 里父窗口可能被关闭，连带销毁本对话框；
+                # 直接调 QDialog.done 会访问已释放的 C++ 对象导致崩溃
+                import shiboken6
+
+                if shiboken6.isValid(self):
+                    QDialog.done(self, result)
+
+            anim.finished.connect(_finish)
             anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
             self._fade_out_anim = anim
             return

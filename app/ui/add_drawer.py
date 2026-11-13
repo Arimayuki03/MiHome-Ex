@@ -20,7 +20,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.overlay_dialog import OverlayDialog
-from app.ui.si_theme import SiColors
+from app.ui.si_theme import (
+    SiColors,
+    on_accent_overlay,
+    on_accent_text,
+)
 
 
 class ModuleCard(QFrame):
@@ -57,8 +61,11 @@ class ModuleCard(QFrame):
         self._btn.setFixedSize(28, 28)
         self._btn.setCursor(Qt.PointingHandCursor)
         self._btn.setStyleSheet(
-            f"QPushButton {{ background: {SiColors.SURFACE}; border: none; border-radius: 14px; color: {SiColors.TEXT_PRIMARY}; font-size: 14pt; }}"
-            "QPushButton:hover { background: #3dbba4; }"
+            f"QPushButton {{ background: {SiColors.CTRL_BG};"
+            f" border: 1px solid {SiColors.CTRL_BORDER}; border-radius: 14px;"
+            f" color: {SiColors.TEXT_PRIMARY}; font-size: 14pt; }}"
+            f"QPushButton:hover {{ background: {SiColors.THEME};"
+            f" border-color: {SiColors.THEME}; color: {SiColors.ON_THEME_TEXT}; }}"
         )
         self._btn.clicked.connect(self._on_btn_clicked)
         lay.addWidget(self._btn, alignment=Qt.AlignVCenter)
@@ -75,25 +82,32 @@ class ModuleCard(QFrame):
         self._btn.setText("✓" if added else "+")
         if added:
             self._btn.setStyleSheet(
-                "QPushButton { background: rgba(255,255,255,0.18); border: none; border-radius: 14px; color: #ffffff; font-size: 12pt; }"
-                "QPushButton:hover { background: rgba(255,255,255,0.28); }"
+                f"QPushButton {{ background: {on_accent_overlay(0.18)}; border: none;"
+                " border-radius: 14px;"
+                f" color: {on_accent_text()}; font-size: 12pt; }}"
+                f"QPushButton:hover {{ background: {on_accent_overlay(0.30)}; }}"
             )
             self.setStyleSheet(
                 f"QFrame#propCard {{ background: {SiColors.THEME}; border: 1px solid {SiColors.THEME}; border-radius: 14px; }}")
-            self._title.setStyleSheet("color: #0b0b0e; background: transparent;")
-            self._desc.setStyleSheet("color: rgba(11,11,14,0.65); background: transparent; font-size: 8pt;")
+            self._title.setStyleSheet(
+                f"color: {on_accent_text()}; background: transparent;")
+            self._desc.setStyleSheet(
+                f"color: {on_accent_text(0.65)}; background: transparent; font-size: 8pt;")
         else:
             # 不可读项即使未添加也不高亮，避免误导为空卡
             if "不可读" in self._desc.text():
                 self._btn.setStyleSheet(
-                    f"QPushButton {{ background: {SiColors.WINDOW_BG}; border: 1px solid {SiColors.SURFACE}; border-radius: 14px; color: {SiColors.OFFLINE_SUB}; font-size: 11pt; }}"
+                    f"QPushButton {{ background: {SiColors.WINDOW_BG}; border: 1px solid {SiColors.LINE}; border-radius: 14px; color: {SiColors.OFFLINE_SUB}; font-size: 11pt; }}"
                     f"QPushButton:hover {{ background: {SiColors.CARD}; }}"
                 )
-                self.setStyleSheet(f"QFrame#propCard {{ background: {SiColors.WINDOW_BG}; border: 1px dashed {SiColors.SURFACE}; border-radius: 14px; }}")
+                self.setStyleSheet(f"QFrame#propCard {{ background: {SiColors.WINDOW_BG}; border: 1px dashed {SiColors.LINE}; border-radius: 14px; }}")
             else:
                 self._btn.setStyleSheet(
-                    f"QPushButton {{ background: {SiColors.SURFACE}; border: none; border-radius: 14px; color: {SiColors.TEXT_PRIMARY}; font-size: 14pt; }}"
-                    "QPushButton:hover { background: #3dbba4; color: #fff; }"
+                    f"QPushButton {{ background: {SiColors.CTRL_BG};"
+                    f" border: 1px solid {SiColors.CTRL_BORDER}; border-radius: 14px;"
+                    f" color: {SiColors.TEXT_PRIMARY}; font-size: 14pt; }}"
+                    f"QPushButton:hover {{ background: {SiColors.THEME};"
+                    f" border-color: {SiColors.THEME}; color: {SiColors.ON_THEME_TEXT}; }}"
                 )
                 self.setStyleSheet("")
             self._title.setStyleSheet(f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")

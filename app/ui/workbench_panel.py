@@ -10,6 +10,8 @@
 import shiboken6
 from typing import Any, Callable
 
+import qtawesome as qta
+
 from PySide6.QtCore import QParallelAnimationGroup, QPropertyAnimation, QTimer, Qt, Signal
 from PySide6.QtCore import QEasingCurve
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
@@ -23,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core import workbench_store
+from app.core import name_override_store, workbench_store
 from app.core.models import DeviceDetail, DeviceInfo, PropInfo
 from app.core.service import MijiaService, format_metrics_text
 from app.ui.add_drawer import AddDrawer
@@ -32,7 +34,7 @@ from app.ui.prop_widgets import (
     build_prop_section,
     group_props,
 )
-from app.ui.si_theme import SiColors, themed_label
+from app.ui.si_theme import SiColors, primary_button_qss, themed_label
 from app.ui.workbench_item import WorkbenchItemWrapper
 
 
@@ -77,6 +79,8 @@ class _SpinCircle(QWidget):
 
 class WorkbenchPanel(QWidget):
     metrics_updated = Signal(str, str)
+    metrics_config_changed = Signal(str)  # noqa: N815 did，卡片外显改过
+    name_changed = Signal(str)  # did，主界面据此刷新卡片与托盘
 
     def __init__(self, service: MijiaService, jobs, parent=None):
         super().__init__(parent)
@@ -84,6 +88,13 @@ class WorkbenchPanel(QWidget):
         self._jobs = jobs
         self._current_did: str | None = None
         self._current_online: bool = True
+        # 设备名与房间来自列表数据，不依赖详情是否加载成功：无公开
+        # 规格的设备拉不到详情，仍要能显示名字并支持改名
+        self._current_name: str = ""
+        self._current_room: str = ""
+        # 列表里的设备对象引用：主窗口改名后会原地更新它的 name 与
+        # cloud_name，面板读这个对象才能拿到最新值，而不是打开时的快照
+        self._device: DeviceInfo | None = None
         self._detail: DeviceDetail | None = None
         self._sections: dict[str, QWidget] = {}
         self._module_defs: list[tuple[str, str, str]] = []
@@ -120,11 +131,29 @@ class WorkbenchPanel(QWidget):
 
         header = QHBoxLayout()
         title_box = QVBoxLayout()
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
         self._title_label = QLabel("未选择设备")
         self._title_label.setObjectName("panelTitle")
+        title_row.addWidget(self._title_label)
+        # 改名按钮贴着名字放：离得远时用户不容易注意到这个入口
+        self._rename_btn = QPushButton()
+        self._rename_btn.setFixedSize(26, 26)
+        self._rename_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._rename_btn.setToolTip("修改设备名称")
+        self._rename_btn.clicked.connect(self._rename_device)
+        self._rename_btn.hide()
+        title_row.addWidget(self._rename_btn)
+
+        # 自定义名称的标记：只在用户改过名时出现，提示当前显示的不是云端名
+        self._custom_badge = QLabel("自定义名称")
+        self._custom_badge.setObjectName("customNameBadge")
+        self._custom_badge.hide()
+        title_row.addWidget(self._custom_badge)
+        title_row.addStretch(1)
+        title_box.addLayout(title_row)
         self._model_label = QLabel("选择一台设备开始控制")
         self._model_label.setObjectName("panelSubtitle")
-        title_box.addWidget(self._title_label)
         title_box.addWidget(self._model_label)
         header.addLayout(title_box)
         header.addStretch(1)
@@ -134,6 +163,18 @@ class WorkbenchPanel(QWidget):
         self._refresh_btn.clicked.connect(lambda: self._reload_readings(force=True))
         self._refresh_btn.hide()
         header.addWidget(self._refresh_btn)
+        # 卡片外显紧挨刷新：两者都影响"看到什么数值"，放在一起符合直觉
+        self._metrics_btn = QPushButton("外显值设置")
+        # 宽度按文字自适应并留出左右内边距：固定高度但不定宽时，
+        # 样式里的 padding 不参与宽度计算，文字会顶到描边上
+        self._metrics_btn.setFixedHeight(32)
+        self._metrics_btn.setMinimumWidth(
+            self._metrics_btn.fontMetrics().horizontalAdvance("外显值设置") + 30)
+        self._metrics_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._metrics_btn.setToolTip("设置设备卡片副标题显示的值")
+        self._metrics_btn.clicked.connect(self._pick_metrics)
+        self._metrics_btn.hide()
+        header.addWidget(self._metrics_btn)
         self._edit_btn = QPushButton("编辑功能")
         self._edit_btn.setFixedSize(80, 32)
         self._edit_btn.setCursor(Qt.PointingHandCursor)
@@ -221,8 +262,7 @@ class WorkbenchPanel(QWidget):
         self._empty_add_btn.setCursor(Qt.PointingHandCursor)
         self._empty_add_btn.setFixedHeight(40)
         self._empty_add_btn.setStyleSheet(
-            f"QPushButton {{ background: {SiColors.THEME}; color: #0b0b0e; border: none; border-radius: 12px; font-size: 10pt; font-weight: 600; padding: 0 24px; }}"
-            f"QPushButton:hover {{ background: {SiColors.THEME_HOVER}; }}")
+            primary_button_qss("0 24px", 12, "10pt"))
         self._empty_add_btn.clicked.connect(self._open_drawer)
         el.addWidget(self._empty_add_btn, alignment=Qt.AlignCenter)
         el.addStretch(1)
@@ -233,7 +273,8 @@ class WorkbenchPanel(QWidget):
         self._footer_add_btn.setCursor(Qt.PointingHandCursor)
         self._footer_add_btn.setFixedHeight(40)
         self._footer_add_btn.setStyleSheet(
-            f"QPushButton {{ background: {SiColors.CARD}; border: 1px solid #3dbba4; border-radius: 12px; color: #3dbba4; font-size: 10pt; }}"
+            f"QPushButton {{ background: {SiColors.CARD}; border: 1px solid {SiColors.THEME};"
+            f" border-radius: 12px; color: {SiColors.THEME}; font-size: 10pt; }}"
             f"QPushButton:hover {{ background: {SiColors.CARD_HOVER}; }}")
         self._footer_add_btn.clicked.connect(self._open_drawer)
         self._footer_add_btn.hide()
@@ -253,15 +294,21 @@ class WorkbenchPanel(QWidget):
         self._clear_workbench()
         name = device.name if device else "设备"
         room = device.room_name if device else ""
+        self._current_name = name
+        self._current_room = room
+        self._device = device
         self._title_label.setText(name)
         self._model_label.setText(room)
         self._title_label.hide()
         self._model_label.hide()
+        self._custom_badge.hide()
+        self._rename_btn.hide()
         self._load_name.setText(name)
         self._load_room.setText(room)
         self._load_hint.setText("正在获取设备信息…")
         self._update_offline_bar()
         self._refresh_btn.hide()
+        self._metrics_btn.hide()
         self._edit_btn.hide()
         self._loading.show()
         self._jobs.submit(
@@ -275,10 +322,11 @@ class WorkbenchPanel(QWidget):
             return
         self._loading.hide()
         self._detail = detail
-        self._title_label.setText(detail.name)
         self._model_label.setText(detail.model)
         self._title_label.show()
         self._model_label.show()
+        self._rename_btn.show()
+        self._apply_display_name()
         self._build_module_defs(detail)
         keys = workbench_store.load(detail.did)
         # 预置开关：首次进入且存在可写开关时自动加入
@@ -295,7 +343,89 @@ class WorkbenchPanel(QWidget):
         self._active_keys = keys
         self._render_workbench()
         self._refresh_btn.show()
+        self._metrics_btn.show()
         self._edit_btn.show()
+
+    def _default_name(self) -> str:
+        """没有自定义名时该显示的名字（即"恢复默认"的目标）。
+
+        优先用设备对象上的 cloud_name：主窗口本地化设备名时会同步
+        更新它，比详情接口返回的原始名更贴近用户看到的展示名。
+        """
+        if self._device is not None and self._device.cloud_name:
+            return self._device.cloud_name
+        if self._detail is not None:
+            return self._detail.name
+        return self._current_name
+
+    def _apply_display_name(self) -> None:
+        """按自定义名称的优先级刷新标题与提示标记。"""
+        cloud_name = self._default_name()
+        custom = name_override_store.get(self._current_did or "")
+        full = custom or cloud_name
+        # 标题栏空间有限，超长名字省略显示，完整内容放 tooltip。
+        # 可用宽度按面板宽度推算（右侧还有刷新/编辑按钮），窗口很窄
+        # 时不能再用固定值，否则文字会溢出到按钮下面。
+        avail = max(120, min(520, self.width() - 220))
+        shown = self._title_label.fontMetrics().elidedText(
+            full, Qt.TextElideMode.ElideRight, avail)
+        self._title_label.setText(shown)
+        self._title_label.setToolTip(full)
+        self._custom_badge.setVisible(bool(custom))
+
+    def _pick_metrics(self) -> None:
+        """选择这张设备卡片副标题要显示哪些数值属性。"""
+        if self._detail is None or not self._current_did:
+            return
+        from app.core import settings_store
+        from app.ui.metrics_pick_dialog import MetricsPickDialog
+
+        saved = settings_store.get_metrics_selection()
+        # 键不存在表示从未设置，传 None 让对话框预勾默认温湿度；
+        # 空列表表示用户已明确选择不外显，保持全空
+        current = saved.get(self._current_did)
+        dialog = MetricsPickDialog(self._detail.props, current, self)
+        accepted = dialog.exec() == MetricsPickDialog.DialogCode.Accepted
+        props = dialog.result_props()
+        restored = dialog.restored_default()
+        untouched = dialog.untouched_default()
+        dialog.deleteLater()
+        if not accepted:
+            return
+        if restored:
+            settings_store.clear_metrics_selection(self._current_did)
+        elif untouched:
+            # 原样没动：不写配置，保持默认语义
+            pass
+        else:
+            # 空列表有意义：用户明确选择了不外显
+            settings_store.set_metrics_selection(self._current_did, props)
+        self.metrics_config_changed.emit(self._current_did)
+
+    def _rename_device(self) -> None:
+        """打开改名对话框；留空或点恢复默认都会还原云端原名。
+
+        不依赖详情是否加载成功：无公开规格的设备拉不到详情，
+        但名字仍来自设备列表，照样可以改。
+        """
+        if not self._current_did:
+            return
+        from app.ui.rename_dialog import RenameDeviceDialog
+
+        cloud_name = self._default_name()
+        current = name_override_store.get(self._current_did) or cloud_name
+        dialog = RenameDeviceDialog(current, cloud_name, self)
+        accepted = dialog.exec() == RenameDeviceDialog.DialogCode.Accepted
+        restore = dialog.restoring()
+        value = dialog.value()
+        dialog.deleteLater()
+        if not accepted:
+            return
+        name_override_store.set_name(
+            self._current_did, "" if restore else value)
+        self._apply_display_name()
+        # 主界面卡片、托盘、挂件都按设备对象里的名字展示，需要同步刷新
+        self.name_changed.emit(self._current_did)
 
     def _default_keys(self) -> list[str]:
         # 优先选择独立的 on 开关（最常用的控制方式）
@@ -436,16 +566,15 @@ class WorkbenchPanel(QWidget):
                     edit.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                     edit.setStyleSheet(
                         f"QLineEdit {{ background: {SiColors.WINDOW_BG}; border: 1px solid {SiColors.LINE}; border-radius: 8px; "
-                        f"padding: 6px 10px; color: {SiColors.TEXT_PRIMARY}; selection-background-color: #3dbba4; font-size: 10pt; }}"
-                        "QLineEdit:focus { border-color: #3dbba4; }"
+                        f"padding: 6px 10px; color: {SiColors.TEXT_PRIMARY};"
+                        f" selection-background-color: {SiColors.THEME}; font-size: 10pt; }}"
+                        f"QLineEdit:focus {{ border-color: {SiColors.THEME}; }}"
                     )
                     row.addWidget(edit, 1)
                     btn = QPushButton("执行")
                     btn.setFixedSize(64, 32)
                     btn.setCursor(Qt.PointingHandCursor)
-                    btn.setStyleSheet(
-                        f"QPushButton {{ background: {SiColors.THEME}; color: #0b0b0e; border: none; border-radius: 8px; font-size: 9pt; font-weight: 600; }}"
-                        f"QPushButton:hover {{ background: {SiColors.THEME_HOVER}; }}")
+                    btn.setStyleSheet(primary_button_qss("0", 8, "9pt"))
                     def _do_exec(n=a.name, e=edit):
                         txt = e.text().strip()
                         if not txt:
@@ -469,9 +598,7 @@ class WorkbenchPanel(QWidget):
                     btn = QPushButton("执行")
                     btn.setFixedSize(64, 32)
                     btn.setCursor(Qt.PointingHandCursor)
-                    btn.setStyleSheet(
-                        f"QPushButton {{ background: {SiColors.THEME}; color: #0b0b0e; border: none; border-radius: 8px; font-size: 9pt; font-weight: 600; }}"
-                        f"QPushButton:hover {{ background: {SiColors.THEME_HOVER}; }}")
+                    btn.setStyleSheet(primary_button_qss("0", 8, "9pt"))
                     btn.clicked.connect(lambda _, n=a.name: self._run_action(n))
                     lay.addWidget(btn)
                 card.setFixedHeight(76)
@@ -532,6 +659,9 @@ class WorkbenchPanel(QWidget):
         self._footer_add_btn.hide()
         self._body.hide()
         self._refresh_btn.hide()
+        self._metrics_btn.hide()
+        self._rename_btn.hide()
+        self._custom_badge.hide()
 
     def _clear_grid(self) -> None:
         # 重排动画进行中切换设备时，先停掉动画：动画目标 wrapper 随即
@@ -619,19 +749,36 @@ class WorkbenchPanel(QWidget):
     # ---------- 管理模式 ----------
 
     def _apply_header_button_styles(self) -> None:
+        # 浅色模式下 SURFACE(#eef0f3) 压在 WINDOW_BG(#f2f3f5) 上几乎看不见，
+        # 改用"白底 + 淡描边"的控件底色，并显式指定文字色，避免继承到灰字
         styles = (
-            f"QPushButton {{ background: {SiColors.SURFACE}; border: none; border-radius: 8px;"
-            f" color: {SiColors.TEXT_PRIMARY}; font-size: 9pt; }}"
-            f"QPushButton:hover {{ background: {SiColors.BTN_HOVER}; }}"
+            f"QPushButton {{ background: {SiColors.CTRL_BG};"
+            f" border: 1px solid {SiColors.CTRL_BORDER}; border-radius: 8px;"
+            f" color: {SiColors.TEXT_PRIMARY}; font-size: 9pt; padding: 0 12px; }}"
+            f"QPushButton:hover {{ background: {SiColors.CTRL_BG_HOVER}; }}"
             f"QPushButton[active=\"true\"] {{ background: {SiColors.THEME};"
+            f" border-color: {SiColors.THEME};"
             f" color: {SiColors.ON_THEME_TEXT}; }}")
         self._refresh_btn.setStyleSheet(styles)
+        self._metrics_btn.setStyleSheet(styles)
         self._edit_btn.setStyleSheet(styles)
+        # 改名按钮贴着小标题，做成无底色的图标按钮，避免和右侧
+        # 操作按钮抢视觉
+        icon_btn_qss = (
+            "QPushButton { background: transparent; border: none;"
+            " border-radius: 6px; }"
+            f"QPushButton:hover {{ background: {SiColors.CTRL_BG_HOVER}; }}")
+        self._rename_btn.setStyleSheet(icon_btn_qss)
+        self._rename_btn.setIcon(
+            qta.icon("mdi.pencil", color=SiColors.TEXT_SECONDARY))
+        self._custom_badge.setStyleSheet(
+            f"color: {SiColors.THEME}; background: {SiColors.SURFACE};"
+            " border-radius: 6px; padding: 1px 8px; font-size: 8.5pt;")
 
     def retheme(self) -> None:
         """主题切换：刷新头部按钮与已加载的功能区块（内联样式冻结）。"""
         self._apply_header_button_styles()
-        for btn in (self._refresh_btn, self._edit_btn):
+        for btn in (self._refresh_btn, self._metrics_btn, self._edit_btn):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
         if self._detail is not None:
@@ -828,14 +975,21 @@ class WorkbenchPanel(QWidget):
         self._emit_metrics(values)
 
     def _emit_metrics(self, values: dict[str, Any]) -> None:
-        temp = values.get("temperature")
-        hum = values.get("relative-humidity")
-        if hum is None:
-            hum = values.get("humidity")
-        if temp is None and hum is None:
+        # 只回传温湿度：详情面板的实时回读取的是这两项，卡片副标题
+        # 若被用户改成功率等属性，由主窗口按自己的选择另行拉取
+        picked: dict[str, float] = {}
+        for name in ("temperature", "relative-humidity", "humidity"):
+            value = values.get(name)
+            if value is None:
+                continue
+            try:
+                picked[name] = float(value)
+            except (TypeError, ValueError):
+                continue
+        if not picked:
             return
         # 格式化与卡片副标题共用同一实现（service 层），避免两处启发式漂移
-        text = format_metrics_text(temp, hum)
+        text = format_metrics_text(picked)
         if text and self._current_did:
             self.metrics_updated.emit(self._current_did, text)
 
@@ -889,6 +1043,10 @@ class WorkbenchPanel(QWidget):
         self._loading.hide()
         self._title_label.show()
         self._model_label.show()
+        # 详情拉不到也要能改名：无公开规格的设备只剩名字可以自定义，
+        # 这里补上标题与改名入口，避免用户无从下手
+        self._apply_display_name()
+        self._rename_btn.show()
         self._load_hint.setText(f"加载失败：{error}")
         self._load_hint.setStyleSheet(
             f"color: {SiColors.ERROR_TEXT}; font-size: 9pt; background: transparent;")

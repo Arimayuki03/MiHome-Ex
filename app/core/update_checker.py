@@ -25,6 +25,10 @@ class ReleaseInfo:
     tag: str
     url: str
     name: str
+    # release 正文（GitHub Releases 里填的更新日志，Markdown 原文）
+    body: str = ""
+    # ISO 8601 发布时间，展示时只取日期
+    published_at: str = ""
 
 
 def fetch_latest_release() -> ReleaseInfo:
@@ -48,6 +52,8 @@ def fetch_latest_release() -> ReleaseInfo:
         tag=tag,
         url=str(data.get("html_url") or RELEASES_PAGE),
         name=str(data.get("name") or tag),
+        body=str(data.get("body") or ""),
+        published_at=str(data.get("published_at") or ""),
     )
 
 

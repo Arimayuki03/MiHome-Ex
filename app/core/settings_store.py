@@ -7,6 +7,7 @@
 保存用户在设置界面中调整的偏好。
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -21,14 +22,37 @@ _DEFAULTS: dict = {
     "start_minimized": False,
     "voice_fab_enabled": True,
     "theme": "system",  # system / light / dark
+    # 主题色（#rrggbb）；空串 = 默认米家绿。派生 hover/dim 与底色上的文字色
+    # 由 ui/si_theme.set_accent 统一计算，这里只存用户选的那个值。
+    "theme_accent": "",
     "hide_no_func_devices": False,
+    # 是否隐藏离线设备（主页与托盘均不显示），默认关闭
+    "hide_offline_devices": False,
     "show_scene_tab": True,  # 主页选项卡最左侧显示「场景」入口（手动场景一键执行）
     "default_speaker_did": "",  # 小爱指令默认输出音箱；空串=自动（第一个在线）
+    # 托盘音响栏正在控制哪台音箱。与 default_speaker_did 刻意分开：
+    # 「对谁说话」和「调谁的音量」经常不是同一台（房间里放着歌，
+    # 但语音指令想发到客厅），共用一个偏好会互相覆盖。
+    "tray_audio_speaker_did": "",
     "ui_scale": 1.0,    # 界面缩放个人微调乘数（叠加在软件基准缩放之上），需重启生效
     "tray_columns": 2,  # 托盘快捷窗口卡片列数：1 或 2
     "check_update_enabled": True,  # 启动时自动检查 GitHub 新版本
     "ble_server_enabled": True,  # 随主程序启停内置 BLE 服务端（扩展组件）
     "ble_server_url": "",  # 充电器后端地址；空=本机模式（拉起内置组件），否则远程 URL（分离式部署，不拉内置组件）
+    # 房间标签的自定义顺序（房间名列表）；未列出的房间按名称排在后面
+    "room_order": [],
+    # 启动后默认打开的标签名；空串表示「全屋」
+    "default_tab": "",
+    # did -> 卡片副标题要显示的属性名列表（最多两个）。键不存在表示用
+    # 默认温湿度；值恰好是空列表表示用户明确选择不外显，两者语义不同
+    "metrics_selection": {},
+    # 托盘图标颜色：system 跟随任务栏深浅，其余为固定色
+    "tray_icon_color": "system",
+    # 主页设备卡片的手动顺序（did 列表）。只记录用户拖动过的设备，
+    # 未列出的按默认规则（在线优先 + 名称）排在后面
+    "device_order": [],
+    # 场景卡片的手动顺序（scene_id 列表），语义同 device_order
+    "scene_order": [],
 }
 
 
@@ -44,6 +68,102 @@ def _read_raw() -> dict:
 
 def _write_raw(raw: dict) -> None:
     _json_store.write_json(_json_store.data_file(_FILENAME), raw)
+
+
+# 托盘图标可选颜色与色值，system 表示跟随任务栏深浅。
+# 色值集中在这里：界面色块和托盘染色都从这里取，避免两处各存一份
+TRAY_ICON_COLORS: dict[str, str] = {
+    "black": "#1a1a1a",
+    "white": "#ffffff",
+    "green": "#3dbba4",
+}
+_TRAY_ICON_CHOICES = ("system",) + tuple(TRAY_ICON_COLORS)
+# 自定义颜色的存储格式，与主题色一致（小写 #rrggbb）
+_HEX_COLOR_RE = re.compile(r"#[0-9a-f]{6}")
+
+
+def get_metrics_selection() -> dict[str, list[str]]:
+    """did -> 卡片副标题要显示的属性名列表。
+
+    三种状态靠键是否存在于返回值里区分：没有这个 did 表示从未设置
+    过（用默认温湿度）；值是空列表表示用户明确选择了不外显；值非空
+    则是具体的属性。调用方要用 in / is not None 判断，不能靠真假值。
+    """
+    raw = _read_raw().get("metrics_selection")
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, list[str]] = {}
+    for did, props in raw.items():
+        if isinstance(props, list):
+            result[str(did)] = [str(p) for p in props
+                                if isinstance(p, str) and p][:2]
+    return result
+
+
+def set_metrics_selection(did: str, props: list[str]) -> None:
+    """写入某台设备的副标题属性。
+
+    传空列表表示明确不外显，会保留一条空记录；要恢复默认请调用
+    clear_metrics_selection 把键删掉，两者语义不同。
+    """
+    raw = _read_raw()
+    current = raw.get("metrics_selection")
+    if not isinstance(current, dict):
+        current = {}
+    current[did] = [str(p) for p in props if isinstance(p, str) and p][:2]
+    raw["metrics_selection"] = current
+    _write_raw(raw)
+
+
+def clear_metrics_selection(did: str) -> None:
+    """删掉这台设备的记录，回到默认温湿度。"""
+    raw = _read_raw()
+    current = raw.get("metrics_selection")
+    if not isinstance(current, dict):
+        return
+    if current.pop(did, None) is not None:
+        raw["metrics_selection"] = current
+        _write_raw(raw)
+
+
+def _normalize_tray_color(value: str) -> str:
+    """把用户值规整成内部形式：预设名原样，十六进制统一小写。
+
+    取色板返回的本来就是小写，这里再做一次是为了兼容手动编辑过
+    设置文件、或别处传入大写色值的情况。不认识的值退回 system。
+    """
+    if value in _TRAY_ICON_CHOICES:
+        return value
+    lowered = value.lower()
+    if _HEX_COLOR_RE.fullmatch(lowered):
+        return lowered
+    return "system"
+
+
+def get_tray_icon_color() -> str:
+    """托盘图标颜色：system / black / white / green，或自定义 #rrggbb。"""
+    value = _read_raw().get("tray_icon_color")
+    return _normalize_tray_color(value) if isinstance(value, str) else "system"
+
+
+def set_tray_icon_color(value: str) -> None:
+    """写入托盘图标颜色；不认识的值按 system 处理，避免存脏数据。"""
+    raw = _read_raw()
+    raw["tray_icon_color"] = (_normalize_tray_color(value)
+                              if isinstance(value, str) else "system")
+    _write_raw(raw)
+
+
+def get_default_tab() -> str:
+    """启动后默认打开的标签名；空串表示「全屋」。"""
+    value = _read_raw().get("default_tab")
+    return value if isinstance(value, str) else ""
+
+
+def set_default_tab(name: str) -> None:
+    raw = _read_raw()
+    raw["default_tab"] = str(name or "")
+    _write_raw(raw)
 
 
 def get_minimize_to_tray() -> bool:
@@ -94,6 +214,33 @@ def set_default_speaker_did(value: str) -> None:
     _write_raw(raw)
 
 
+def get_tray_audio_speaker_did() -> str:
+    """托盘音响栏正在控制的音箱 did；空串表示跟随（语音默认 → 第一个在线）。
+
+    与 `default_speaker_did` 相互独立：改音响栏不会影响语音指令发往哪台，
+    反之亦然。所选音箱离线时不强制回退写入，等它重新上线就自动回到它。
+    """
+    value = _read_raw().get("tray_audio_speaker_did", "")
+    return value if isinstance(value, str) else ""
+
+
+def set_tray_audio_speaker_did(value: str) -> None:
+    raw = _read_raw()
+    raw["tray_audio_speaker_did"] = value if isinstance(value, str) else ""
+    _write_raw(raw)
+
+
+def get_hide_offline_devices() -> bool:
+    """是否隐藏离线设备，默认关闭。"""
+    return bool(_read_raw().get("hide_offline_devices", False))
+
+
+def set_hide_offline_devices(value: bool) -> None:
+    raw = _read_raw()
+    raw["hide_offline_devices"] = bool(value)
+    _write_raw(raw)
+
+
 def get_hide_no_func_devices() -> bool:
     """是否隐藏无可控制功能的设备（无 spec / spec 无属性），默认关闭。"""
     return bool(_read_raw().get("hide_no_func_devices", False))
@@ -102,6 +249,48 @@ def get_hide_no_func_devices() -> bool:
 def set_hide_no_func_devices(value: bool) -> None:
     raw = _read_raw()
     raw["hide_no_func_devices"] = bool(value)
+    _write_raw(raw)
+
+
+def get_device_order() -> list[str]:
+    """主页卡片的手动顺序（did 列表）；空表示按默认规则排序。"""
+    raw = _read_raw().get("device_order")
+    if not isinstance(raw, list):
+        return []
+    return [str(did) for did in raw if isinstance(did, str) and did]
+
+
+def set_device_order(dids: list[str]) -> None:
+    raw = _read_raw()
+    raw["device_order"] = [str(did) for did in dids]
+    _write_raw(raw)
+
+
+def get_scene_order() -> list[str]:
+    """场景卡片的手动顺序（scene_id 列表）；空表示按名称排序。"""
+    raw = _read_raw().get("scene_order")
+    if not isinstance(raw, list):
+        return []
+    return [str(sid) for sid in raw if isinstance(sid, str) and sid]
+
+
+def set_scene_order(scene_ids: list[str]) -> None:
+    raw = _read_raw()
+    raw["scene_order"] = [str(sid) for sid in scene_ids]
+    _write_raw(raw)
+
+
+def get_room_order() -> list[str]:
+    """房间标签的自定义顺序；空列表表示按名称排序。"""
+    raw = _read_raw().get("room_order")
+    if not isinstance(raw, list):
+        return []
+    return [str(name) for name in raw if isinstance(name, str) and name]
+
+
+def set_room_order(rooms: list[str]) -> None:
+    raw = _read_raw()
+    raw["room_order"] = [str(name) for name in rooms]
     _write_raw(raw)
 
 
@@ -207,6 +396,23 @@ def get_theme_mode() -> str:
 def set_theme_mode(value: str) -> None:
     raw = _read_raw()
     raw["theme"] = value if value in ("system", "light", "dark") else "system"
+    _write_raw(raw)
+
+
+def get_theme_accent() -> str:
+    """主题色（#rrggbb）；空串表示使用默认米家绿。"""
+    value = _read_raw().get("theme_accent", "")
+    if not isinstance(value, str):
+        return ""
+    value = value.strip().lower()
+    # 只认 #rrggbb：手改坏的值按默认色处理，不让界面刷成透明/黑块
+    return value if len(value) == 7 and value.startswith("#") else ""
+
+
+def set_theme_accent(value: str) -> None:
+    raw = _read_raw()
+    text = (value or "").strip().lower()
+    raw["theme_accent"] = text if len(text) == 7 and text.startswith("#") else ""
     _write_raw(raw)
 
 

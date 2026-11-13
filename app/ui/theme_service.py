@@ -13,6 +13,7 @@ import logging
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QGuiApplication
 
+from app.core import settings_store
 from app.ui import si_theme
 
 logger = logging.getLogger(__name__)
@@ -37,15 +38,29 @@ def effective_theme(mode: str) -> str:
     return "dark"
 
 
-def apply_theme(mode: str) -> str:
-    """应用主题设置并刷新全局样式，返回实际生效的主题名。"""
+def apply_theme(mode: str, accent: str | None = None) -> str:
+    """应用主题设置并刷新全局样式，返回实际生效的主题名。
+
+    `accent` 为 None 时读设置里的主题色（空串=默认米家绿）；设置页
+    预览时会直接传待选的色值，避免"预览即落盘"。
+    """
     theme = effective_theme(mode)
     si_theme.set_theme(theme)
+    si_theme.set_accent(settings_store.get_theme_accent() if accent is None else accent)
     si_theme.sync_siui_colors()
     try:
         app = QGuiApplication.instance()
         if app is not None:
+            # 调色板先于 QSS：Qt 自绘控件（下拉弹层、消息框按钮、选区、
+            # 工具提示）取调色板，不设就会沿用 Windows 的深浅色而与本应用主题错位
+            palette = si_theme.build_palette()
+            app.setPalette(palette)
             app.setStyleSheet(si_theme.build_qss())
+            # QToolTip 是独立顶层窗口，部分环境下不跟随 app 调色板：
+            # 系统深色模式时会出现"黑底深字"几乎看不清，这里显式同步一份
+            from PySide6.QtWidgets import QToolTip
+
+            QToolTip.setPalette(palette)
     except Exception:
         logger.exception("应用全局 QSS 失败")
     return theme
@@ -70,10 +85,17 @@ class ThemeController(QObject):
     def mode(self) -> str:
         return self._mode
 
-    def set_mode(self, mode: str) -> str:
-        """切换设置模式并立即应用；返回实际生效主题。"""
+    def system_scheme(self) -> str:
+        """当前系统配色（"dark"/"light"），与设置里的模式无关。"""
+        from PySide6.QtCore import Qt
+
+        scheme = self._hints.colorScheme()
+        return "light" if scheme == Qt.ColorScheme.Light else "dark"
+
+    def set_mode(self, mode: str, accent: str | None = None) -> str:
+        """切换设置模式（可选同时换主题色）并立即应用；返回实际生效主题。"""
         self._mode = mode
-        theme = apply_theme(mode)
+        theme = apply_theme(mode, accent)
         self.theme_changed.emit(theme)
         return theme
 

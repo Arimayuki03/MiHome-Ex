@@ -77,7 +77,7 @@ class _DeferredJobs:
     def __init__(self):
         self.tasks: list[tuple] = []
 
-    def submit(self, fn, on_success=None, on_error=None):
+    def submit(self, fn, on_success=None, on_error=None, **kwargs):
         self.tasks.append((fn, on_success, on_error))
         return None
 
@@ -419,6 +419,10 @@ def test_dirty_order_duplicates_and_missing() -> None:
 # ---------- 4. 主页场景视图与场景开关 ----------
 
 class _NoTray:
+    def __getattr__(self, name):
+        # 上游新增的托盘接口（挂件开关/指示灯等）在无托盘测试里一律空实现
+        return lambda *args, **kwargs: None
+
     def set_tray_visible(self, visible):
         pass
 

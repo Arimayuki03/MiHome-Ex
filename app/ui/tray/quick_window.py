@@ -32,7 +32,7 @@ import qtawesome as qta
 import shiboken6
 
 from app.core import settings_store, tray_store
-from app.core.jobs import JobExecutor
+from app.core.jobs import PRIORITY_CONTROL, JobExecutor
 from app.core.models import DeviceInfo, SceneInfo, is_speaker
 from app.core.service import MijiaService
 from app.ui.cuktech_visuals import _PORT_COLORS
@@ -104,8 +104,9 @@ class TrayQuickWindow(QDialog):
         home_btn.setIcon(qta.icon('mdi.home', color=SiColors.TEXT_PRIMARY))
         home_btn.setIconSize(QSize(16, 16))
         home_btn.setStyleSheet(
-            f"QPushButton {{ background: {SiColors.SURFACE}; border: none; border-radius: 11px; }}"
-            f"QPushButton:hover {{ background: {SiColors.BTN_HOVER}; }}")
+            f"QPushButton {{ background: {SiColors.CTRL_BG};"
+            f" border: 1px solid {SiColors.CTRL_BORDER}; border-radius: 11px; }}"
+            f"QPushButton:hover {{ background: {SiColors.CTRL_BG_HOVER}; }}")
         home_btn.setAutoDefault(False)
         home_btn.setDefault(False)
         home_btn.clicked.connect(self._open_main)
@@ -116,8 +117,9 @@ class TrayQuickWindow(QDialog):
         self._cols_btn.setCursor(Qt.PointingHandCursor)
         self._cols_btn.setIconSize(QSize(16, 16))
         self._cols_btn.setStyleSheet(
-            f"QPushButton {{ background: {SiColors.SURFACE}; border: none; border-radius: 11px; }}"
-            f"QPushButton:hover {{ background: {SiColors.BTN_HOVER}; }}")
+            f"QPushButton {{ background: {SiColors.CTRL_BG};"
+            f" border: 1px solid {SiColors.CTRL_BORDER}; border-radius: 11px; }}"
+            f"QPushButton:hover {{ background: {SiColors.CTRL_BG_HOVER}; }}")
         self._cols_btn.setAutoDefault(False)
         self._cols_btn.setDefault(False)
         self._cols_btn.clicked.connect(self._toggle_columns)
@@ -131,8 +133,9 @@ class TrayQuickWindow(QDialog):
         add_btn.setIcon(qta.icon('mdi.plus', color=f'{SiColors.TEXT_PRIMARY}'))
         add_btn.setIconSize(QSize(16, 16))
         add_btn.setStyleSheet(
-            f"QPushButton {{ background: {SiColors.SURFACE}; border: none; border-radius: 11px; }}"
-            f"QPushButton:hover {{ background: {SiColors.BTN_HOVER}; }}")
+            f"QPushButton {{ background: {SiColors.CTRL_BG};"
+            f" border: 1px solid {SiColors.CTRL_BORDER}; border-radius: 11px; }}"
+            f"QPushButton:hover {{ background: {SiColors.CTRL_BG_HOVER}; }}")
         add_btn.setAutoDefault(False)
         add_btn.setDefault(False)
         add_btn.clicked.connect(self.manage_requested.emit)
@@ -145,8 +148,9 @@ class TrayQuickWindow(QDialog):
         close.setIcon(qta.icon('mdi.close', color=f'{SiColors.TEXT_PRIMARY}'))
         close.setIconSize(QSize(16, 16))
         close.setStyleSheet(
-            f"QPushButton {{ background: {SiColors.SURFACE}; border: none; border-radius: 11px; }}"
-            "QPushButton:hover { background: #c0392b; }")
+            f"QPushButton {{ background: {SiColors.CTRL_BG};"
+            f" border: 1px solid {SiColors.CTRL_BORDER}; border-radius: 11px; }}"
+            f"QPushButton:hover {{ background: {SiColors.DANGER}; }}")
         close.setAutoDefault(False)
         close.setDefault(False)
         close.clicked.connect(self.hide_animated)
@@ -159,7 +163,7 @@ class TrayQuickWindow(QDialog):
         self._scroll.setFrameShape(QFrame.NoFrame)
         # 固定高度：可见 4 排卡片（56×4 + 间距6×3），单双列共用同一行高；
         # 窗口按上下栏显隐外扩
-        self._scroll.setFixedHeight(4 * 56 + 3 * 6)
+        self._scroll.setFixedHeight(4 * 50 + 3 * 6)
         self._scroll.setStyleSheet(
             "QScrollArea { background: transparent; border: none; }"
             "QScrollBar:vertical { background: transparent; width: 6px; margin: 0 2px 0 0; }"
@@ -206,6 +210,7 @@ class TrayQuickWindow(QDialog):
 
         # 音箱音频控制栏：不放在设备卡片内，顶部单独界面
         self._audio_bar = _TrayAudioBar(service, jobs, self)
+        self._audio_bar.speaker_changed.connect(self._on_audio_speaker_changed)
 
         self._outer_lay = QVBoxLayout(self)
         self._outer_lay.setContentsMargins(0, 0, 0, 0)
@@ -315,7 +320,7 @@ class TrayQuickWindow(QDialog):
         self._sync_tray_height()
 
     def _pick_speaker(self) -> DeviceInfo | None:
-        """输出音箱：设置的默认音箱（在线时）优先，否则第一个在线音箱。"""
+        """语音指令输出音箱：设置的默认音箱（在线时）优先，否则第一个在线音箱。"""
         pref = settings_store.get_default_speaker_did()
         if pref:
             for d in self._devices:
@@ -323,14 +328,44 @@ class TrayQuickWindow(QDialog):
                     return d
         return next((d for d in self._devices if is_speaker(d) and d.online), None)
 
+    def _pick_audio_speaker(self) -> DeviceInfo | None:
+        """音响栏控制的目标音箱，与语音指令的音箱**互不影响**。
+
+        优先级：音响栏自己选过的那台（在线时）→ 语音默认音箱 → 第一台在线。
+        所选音箱离线时只在本次回退、不改写偏好，重新上线后自动回到它。
+        """
+        online = [d for d in self._devices if is_speaker(d) and d.online]
+        if not online:
+            return None
+        pref = settings_store.get_tray_audio_speaker_did()
+        for d in online:
+            if pref and d.did == pref:
+                return d
+        voice = self._pick_speaker()
+        return voice if voice is not None else online[0]
+
     def _update_audio_bar(self) -> None:
         # 有在线小爱音箱时显示音频控制栏；无则隐藏
-        speaker = self._pick_speaker()
-        if speaker is not None:
-            self._audio_bar.set_speaker(speaker.did)
+        speakers = [d for d in self._devices if is_speaker(d) and d.online]
+        if speakers:
+            # 下拉只列在线音箱：与能控制的范围一致，避免选了也点不动
+            self._audio_bar.set_speakers(speakers)
+            speaker = self._pick_audio_speaker()
+            self._audio_bar.set_speaker(speaker.did if speaker else None)
         else:
             self._audio_bar.set_speaker(None)
         self._sync_tray_height()
+
+    def _on_audio_speaker_changed(self, did: str) -> None:
+        """用户在音响栏下拉里换了音箱：只记音响栏自己的偏好。
+
+        不能写 `default_speaker_did`——那是语音指令发往哪台的设置，
+        两者是两件事（屋里放歌的音箱未必是想对话的那台）。
+        """
+        if not did:
+            return
+        settings_store.set_tray_audio_speaker_did(did)
+        self._update_audio_bar()
 
     def _sync_tray_height(self) -> None:
         # 确定性计算窗口高度，不依赖 adjustSize（隐藏态会漏算语音条/音频栏）：
@@ -339,7 +374,7 @@ class TrayQuickWindow(QDialog):
         audio_h = 0
         if not self._audio_bar.isHidden():
             ah = self._audio_bar.sizeHint().height()
-            audio_h = (ah if ah > 0 else 105) + 8  # 外层 spacing
+            audio_h = (ah if ah > 0 else 140) + 8  # 8 = 外层 spacing
         voice_h = 36 + 10 if not self._voice_frame.isHidden() else 0  # 36 + 间距10
         # 根面板：标题 26 + 滚动区高 + 上间距10 + 下间距10 + 内容边距 24。
         # 滚动区高度按可见 4 排估：普通行 56、大卡（span≥2 的 CUKTECH
@@ -823,14 +858,14 @@ class TrayQuickWindow(QDialog):
         row = QFrame()
         row.setObjectName("trayRow")
         row.setAttribute(Qt.WA_StyledBackground, True)
-        row.setFixedHeight(56)
+        row.setFixedHeight(50)
         from PySide6.QtWidgets import QSizePolicy
         row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         row.setStyleSheet(
             f"QFrame#trayRow {{ background: {SiColors.CARD}; border: 1px solid {SiColors.LINE}; border-radius: 10px; }}"
             f"QFrame#trayRow:hover {{ background: {SiColors.CARD_HOVER}; border-color: {SiColors.CARD_BORDER_HOVER}; }}")
         lay = QHBoxLayout(row)
-        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setContentsMargins(12, 6, 12, 6)
         lay.setSpacing(10)
 
         known = self._known_power.get(dev.did)
@@ -869,11 +904,18 @@ class TrayQuickWindow(QDialog):
             btn = PowerButton(28, icon_size=22)
             btn.set_state(known)
             def _on_toggle(checked=False, d=dev.did, b=btn):
+                # 已知状态直接写反值（省一次读往返）+ 立刻翻转按钮，
+                # 失败在回调里回滚：点击不再有"点了没反应"的空窗
+                target = not bool(self._known_power.get(d))
+                self._known_power[d] = target
+                b.set_state(target)
                 b.set_busy(True)
                 self._jobs.submit(
-                    lambda: self._service.toggle_power(d),
+                    lambda: (self._service.set_power_state(d, target), target)[1],
                     on_success=lambda ns, dd=d, bb=b: self._on_toggle_done(dd, ns, bb),
-                    on_error=lambda e, bb=b: self._on_toggle_error(e, bb),
+                    on_error=lambda e, dd=d, bb=b, prev=(not target):
+                        self._on_toggle_failed(dd, prev, bb),
+                    priority=PRIORITY_CONTROL,
                 )
             btn.clicked.connect(_on_toggle)
             lay.addWidget(btn)
@@ -898,10 +940,14 @@ class TrayQuickWindow(QDialog):
         btn.set_state(ns)
         btn.set_busy(False)
 
-    def _on_toggle_error(self, error: Exception, btn) -> None:
-        if not shiboken6.isValid(btn):
-            return
-        btn.set_busy(False)
+    def _on_toggle_failed(self, did: str, revert_to: bool, btn) -> None:
+        """写入失败：回滚乐观翻转的按钮，不留假状态。"""
+        import shiboken6
+
+        self._known_power[did] = revert_to
+        if shiboken6.isValid(btn):
+            btn.set_state(revert_to)
+            btn.set_busy(False)
 
     # ---------- 场景行 ----------
 
@@ -909,14 +955,14 @@ class TrayQuickWindow(QDialog):
         row = QFrame()
         row.setObjectName("trayRow")
         row.setAttribute(Qt.WA_StyledBackground, True)
-        row.setFixedHeight(56)
+        row.setFixedHeight(50)
         from PySide6.QtWidgets import QSizePolicy
         row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         row.setStyleSheet(
             f"QFrame#trayRow {{ background: {SiColors.CARD}; border: 1px solid {SiColors.LINE}; border-radius: 10px; }}"
             f"QFrame#trayRow:hover {{ background: {SiColors.CARD_HOVER}; border-color: {SiColors.CARD_BORDER_HOVER}; }}")
         lay = QHBoxLayout(row)
-        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setContentsMargins(12, 6, 12, 6)
         lay.setSpacing(10)
 
         avail = self._card_text_width(True)

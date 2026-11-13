@@ -33,7 +33,12 @@ from app.siui.components.slider_ import SiSlider
 
 from app.core.models import PropInfo
 from app.ui.power_button import PowerButton
-from app.ui.si_theme import SiColors, themed_label, themed_switch
+from app.ui.si_theme import (
+    SiColors,
+    primary_button_qss,
+    themed_label,
+    themed_switch,
+)
 
 
 # 常见传感器/统计属性的展示单位，命中则给只读值加上单位后缀
@@ -147,10 +152,23 @@ def _value_label() -> QLabel:
 
 
 class _NoWheelSlider(SiSlider):
-    """禁用滚轮调节的滑块：滚轮事件穿透给页面滚动；拇指用 THUMB 调色板色。"""
+    """禁用滚轮调节的滑块：滚轮事件穿透给页面滚动；拇指用 THUMB 调色板色。
+
+    siui 的拇指是纯色填充、没有描边：浅色主题下拇指是白的，落在同样
+    是白底的卡片上就"消失"了（用户截图反馈看不到滑块）。这里补一圈
+    主题色描边，深浅两套主题下都能一眼看到拇指落在哪。
+    """
 
     def wheelEvent(self, event) -> None:  # noqa: N802 (Qt 命名约定)
         event.ignore()
+
+    def _drawThumbRect(self, painter, rect) -> None:  # noqa: N802
+        super()._drawThumbRect(painter, rect)
+        from PySide6.QtGui import QPen
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(SiColors.THEME), 2))
+        # 内缩 1px 绘制描边：否则滑块停在两端时圆环会被控件边界切掉一条
+        painter.drawPath(self._drawThumbPath(rect.adjusted(1, 1, -1, -1)))
 
 
 def _make_slider() -> _NoWheelSlider:
@@ -162,7 +180,9 @@ def _make_slider() -> _NoWheelSlider:
     # 拇指恒色：悬停不变色，详情页与工作台共用同一套观感
     slider.style_data.thumb_idle_color = QColor(SiColors.THUMB)
     slider.style_data.thumb_hover_color = QColor(SiColors.THUMB)
-    slider.style_data.background_color = QColor(SiColors.SURFACE)
+    # 未播放轨道用滚动条色：SURFACE 在浅色卡片上几乎与白底同色，
+    # 整条滑轨会"消失"，看不出可拖动的范围
+    slider.style_data.background_color = QColor(SiColors.SCROLLBAR)
     # 圆形拇指：宽高相等 + 圆角由组件内部按半宽绘制
     slider.style_data.thumb_width = 18
     slider.style_data.thumb_height = 18
@@ -387,11 +407,18 @@ class EnumGridSection(QFrame):
     def _highlight(self, value: Any) -> None:
         for button, item_value in zip(self._buttons, self._values):
             active = item_value == value
-            button.setStyleSheet(
-                f"QPushButton {{ background: {SiColors.THEME if active else f'{SiColors.SURFACE}'};"
-                f" color: {'#0b0b0e' if active else SiColors.TEXT_PRIMARY};"
-                f" border: 1px solid {SiColors.THEME if active else f'{SiColors.SURFACE}'}; border-radius: 8px; padding: 6px 12px; }}"
-            )
+            if active:
+                button.setStyleSheet(
+                    f"QPushButton {{ background: {SiColors.THEME};"
+                    f" color: {SiColors.ON_THEME_TEXT}; border: 1px solid {SiColors.THEME};"
+                    " border-radius: 8px; padding: 6px 12px; }}")
+            else:
+                button.setStyleSheet(
+                    f"QPushButton {{ background: {SiColors.CTRL_BG};"
+                    f" color: {SiColors.TEXT_PRIMARY};"
+                    f" border: 1px solid {SiColors.CTRL_BORDER};"
+                    " border-radius: 8px; padding: 6px 12px; }}"
+                    f"QPushButton:hover {{ background: {SiColors.CTRL_BG_HOVER}; }}")
 
     def refresh_value(self, value: Any) -> None:
         self._highlight(value)
@@ -555,17 +582,16 @@ class TextRowSection(QFrame):
             editor.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             editor.setStyleSheet(
                 f"QLineEdit {{ background: {SiColors.WINDOW_BG}; border: 1px solid {SiColors.LINE}; border-radius: 8px; "
-                f"padding: 6px 10px; color: {SiColors.TEXT_PRIMARY}; selection-background-color: #3dbba4; font-size: 10pt; }}"
-                "QLineEdit:focus { border-color: #3dbba4; }"
+                f"padding: 6px 10px; color: {SiColors.TEXT_PRIMARY};"
+                f" selection-background-color: {SiColors.THEME}; font-size: 10pt; }}"
+                f"QLineEdit:focus {{ border-color: {SiColors.THEME}; }}"
             )
             # 提交仅由"设置"按钮与回车触发；editingFinished 会在失焦时
             # 触发，删除内容后点卡片外部也会误提交，故弃用
             btn = QPushButton("设置")
             btn.setFixedSize(56, 32)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(
-                f"QPushButton {{ background: {SiColors.THEME}; color: #0b0b0e; border: none; border-radius: 8px; font-size: 9pt; font-weight: 600; }}"
-                f"QPushButton:hover {{ background: {SiColors.THEME_HOVER}; }}")
+            btn.setStyleSheet(primary_button_qss("0", 8, "9pt"))
             def _commit_text(e=editor):
                 write(e.text())
             btn.clicked.connect(lambda: _commit_text())

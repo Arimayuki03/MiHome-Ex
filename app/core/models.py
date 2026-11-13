@@ -34,6 +34,8 @@ class DeviceInfo:
     # 云端下发的规格 URN；无公开规格设备为空（上游 5.x 起按它拉 spec）。
     # 追加在 source 之后，关键字构造不受字段顺序影响。
     spec_type: str = ""
+    # 云端原始名称：用户自定义名称覆盖 name 后，恢复默认时从这里取值
+    cloud_name: str = ""
 
     @property
     def is_cuktech(self) -> bool:

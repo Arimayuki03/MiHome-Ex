@@ -9,10 +9,6 @@
 「没新版」与「断网了」。
 """
 
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QMessageBox
-
 from app.core.update_checker import UpdateChecker, is_newer
 from app.ui.toast import Toast
 
@@ -39,21 +35,14 @@ def check_update(parent, manual: bool) -> None:
 
 
 def prompt_new_version(parent, info) -> None:
-    """弹「发现新版本」对话框：前往下载 / 暂不更新。"""
-    from app import __version__
+    """弹「发现新版本」对话框：版本对比 + Markdown 更新日志 + 前往下载。"""
+    from app.ui.update_dialog import UpdateDialog
 
     # 主窗体可能已隐藏到托盘（启动静默场景），给隐藏父级弹
     # 模态框位置会落在不可见区域，此时改挂屏幕中央
     host = None if (parent is not None and parent.isHidden()) else parent
-    box = QMessageBox(host)
-    box.setIcon(QMessageBox.Icon.Information)
-    box.setWindowTitle("发现新版本")
-    box.setText(f"发现新版本 {info.tag}（当前 v{__version__}）")
-    if info.name and info.name != info.tag:
-        box.setInformativeText(info.name)
-    download = box.addButton("前往下载", QMessageBox.ButtonRole.AcceptRole)
-    box.addButton("暂不更新", QMessageBox.ButtonRole.RejectRole)
-    box.setDefaultButton(download)
-    box.exec()
-    if box.clickedButton() is download:
-        QDesktopServices.openUrl(QUrl(info.url))
+    dlg = UpdateDialog(info, host)
+    try:
+        dlg.exec()
+    finally:
+        dlg.deleteLater()

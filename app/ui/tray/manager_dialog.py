@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # MiHome-Ex: 米家设备的 Windows 桌面控制端（扩展版）
 # Copyright (C) 2026 MiHome-Ex contributors
-"""托盘项目管理对话框：设备/场景勾选加入 + 统一排序页拖拽排序。"""
+"""托盘项目管理对话框：设备/场景勾选加入 + 统一排序页拖拽排序。
+
+设备页可同时按关键字与房间筛选候选，房间选项带家庭名前缀；场景不属于
+任何房间，切到场景页时房间下拉收起，避免把场景整页藏空。
+"""
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFont
@@ -9,6 +13,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -20,7 +25,13 @@ import qtawesome as qta
 from app.core import settings_store, tray_store
 from app.core.models import DeviceInfo, SceneInfo
 from app.ui.overlay_dialog import OverlayDialog
-from app.ui.si_theme import SiColors
+from app.ui.room_filter import make_room_combo, refresh_room_combo, room_key
+from app.ui.si_theme import (
+    SiColors,
+    check_toggle_qss,
+    primary_button_qss,
+    secondary_button_qss,
+)
 from app.ui.tray.draggable_row import _DraggableRow
 
 
@@ -73,7 +84,6 @@ class TrayManagerDialog(OverlayDialog):
         header_title.setStyleSheet(f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
         header.addWidget(header_title)
         header.addStretch(1)
-        header.addWidget(self._make_close_button())
         lay.addWidget(title_bar)
 
         # 分类选项卡：设备 / 场景；默认设备
@@ -94,9 +104,10 @@ class TrayManagerDialog(OverlayDialog):
         self._sort_btn.setCursor(Qt.PointingHandCursor)
         self._sort_btn.setFixedHeight(30)
         self._sort_btn.setStyleSheet(
-            f"QPushButton {{ background: {SiColors.SURFACE}; border: none; border-radius: 8px;"
+            f"QPushButton {{ background: {SiColors.CTRL_BG};"
+            f" border: 1px solid {SiColors.CTRL_BORDER}; border-radius: 8px;"
             f" padding: 0 14px; color: {SiColors.TEXT_PRIMARY}; font-weight: 600; }}"
-            f"QPushButton:hover {{ background: {SiColors.BTN_HOVER}; }}")
+            f"QPushButton:hover {{ background: {SiColors.CTRL_BG_HOVER}; }}")
         self._sort_btn.clicked.connect(self._toggle_sort_view)
         tab_row.addWidget(self._sort_btn)
         lay.addLayout(tab_row)
@@ -108,6 +119,21 @@ class TrayManagerDialog(OverlayDialog):
         self._subtitle.setStyleSheet(
             f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 9pt;")
         lay.addWidget(self._subtitle)
+
+        # 顶部搜索：设备多时靠滚动找太慢。提示词按当前页给，
+        # 设备页不出现"场景"、场景页不出现"设备"，避免误导搜索范围
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("搜索设备 / 房间…")
+        self._search.setClearButtonEnabled(True)
+        self._search.setFixedHeight(28)
+        self._search.setStyleSheet(
+            f"QLineEdit {{ background: {SiColors.SURFACE}; border: 1px solid {SiColors.LINE};"
+            f" border-radius: 8px; padding: 2px 10px; color: {SiColors.TEXT_PRIMARY};"
+            " font-size: 9pt; }"
+            f"QLineEdit:focus {{ border-color: {SiColors.THEME}; }}")
+        self._search.textChanged.connect(self._apply_filter)
+        self._filter_row = self._make_filter_row()
+        lay.addWidget(self._filter_row)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -192,30 +218,32 @@ class TrayManagerDialog(OverlayDialog):
             # 绿底显示加号 / 暗底显示对勾的错位（与详情页 set_added 一致）
             btn.toggled.connect(lambda checked, b=btn: b.setText("✓" if checked else "+"))
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(
-                f"QPushButton {{ background: {SiColors.SURFACE}; border: none; border-radius: 14px; color: {SiColors.TEXT_PRIMARY}; }}"
-                "QPushButton:checked { background: #3dbba4; color: #0b0b0e; }"
-                f"QPushButton:hover {{ background: {SiColors.BTN_HOVER}; }}"
-                "QPushButton:checked:hover { background: #4ccdb5; }")
+            btn.setStyleSheet(check_toggle_qss(28))
             self._checks[dev.did] = btn
             rl.addWidget(btn)
             row._did = dev.did  # type: ignore[attr-defined]
+            # 搜索匹配用：设备名 + 房间名，大小写不敏感
+            row._search_text = f"{dev.name} {dev.room_name}".lower()
+            # 房间筛选用：与下拉项的 item data 同一种键（家庭 + 房间）
+            row._room_key = room_key(dev)
             self._list_lay.addWidget(row)
         self._list_lay.addStretch(1)
+
+        # 房间下拉的选项来自实际设备：一台都没有房间归属时整块收起，
+        # 把整行宽度让给搜索框
+        self._has_room_options = refresh_room_combo(self._room_combo, all_devs)
+        self._room_combo.setVisible(self._has_room_options)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
         cancel = QPushButton("取消")
         cancel.setCursor(Qt.PointingHandCursor)
         cancel.clicked.connect(self.reject)
-        cancel.setStyleSheet(
-            f"QPushButton {{ background: {SiColors.SURFACE}; border: none; border-radius: 8px; padding: 6px 16px; color: {SiColors.TEXT_PRIMARY}; }}"
-            f"QPushButton:hover {{ background: {SiColors.BTN_HOVER}; }}")
+        cancel.setStyleSheet(secondary_button_qss())
         ok = QPushButton("保存")
         ok.setCursor(Qt.PointingHandCursor)
-        ok.setStyleSheet(
-            f"QPushButton {{ background: {SiColors.THEME}; border: none; border-radius: 8px; padding: 6px 16px; color: #0b0b0e; font-weight: 600; }}"
-            f"QPushButton:hover {{ background: {SiColors.THEME_HOVER}; }}")
+        # 主按钮文字固定白色（不随深/浅主题翻转）
+        ok.setStyleSheet(primary_button_qss())
         ok.clicked.connect(self.accept)
         btn_row.addWidget(cancel)
         btn_row.addWidget(ok)
@@ -278,7 +306,7 @@ class TrayManagerDialog(OverlayDialog):
         """行样式：普通态带 hover，拖拽命中态描边高亮。"""
         if highlight:
             return (f"QFrame#trayRow {{ background: {SiColors.CARD_HOVER};"
-                    " border: 2px solid #3dbba4; border-radius: 10px; }")
+                    f" border: 2px solid {SiColors.THEME}; border-radius: 10px; }}")
         return (f"QFrame#trayRow {{ background: {SiColors.CARD}; border: 1px solid {SiColors.LINE}; border-radius: 10px; }}"
                 f"QFrame#trayRow:hover {{ background: {SiColors.CARD_HOVER}; }}")
 
@@ -290,6 +318,8 @@ class TrayManagerDialog(OverlayDialog):
         is_list = view == "list"
         self._tab_dev.setVisible(is_list)
         self._tab_scene.setVisible(is_list)
+        self._filter_row.setVisible(is_list)
+        self._sync_room_visibility()
         self._scroll.setVisible(is_list and self._tab_dev.isChecked())
         self._scene_scroll.setVisible(is_list and not self._tab_dev.isChecked())
         self._sort_scroll.setVisible(not is_list)
@@ -300,7 +330,55 @@ class TrayManagerDialog(OverlayDialog):
             self._sort_btn.setText("返回")
             self._sort_btn.setIcon(qta.icon('mdi.arrow-left', color=SiColors.TEXT_PRIMARY))
             self._rebuild_sort_view()
+        self._apply_filter(self._search.text())
         self._update_subtitle()
+
+    def _make_filter_row(self) -> QWidget:
+        """搜索框 + 房间筛选下拉：两个条件取交集，都只隐藏行不动勾选。"""
+        self._room_combo = make_room_combo()
+        self._room_combo.currentIndexChanged.connect(
+            lambda _index: self._apply_filter(self._search.text()))
+        # 还没有设备清单，先按「没有可筛房间」处理
+        self._has_room_options = False
+        holder = QWidget()
+        holder.setStyleSheet("background: transparent;")
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(self._search, stretch=1)
+        row.addWidget(self._room_combo)
+        return holder
+
+    def _sync_room_visibility(self) -> None:
+        """房间下拉只对设备页生效：场景不属于任何房间，切过去就收起。"""
+        self._room_combo.setVisible(
+            self._has_room_options and self._view == "list"
+            and self._tab_dev.isChecked())
+
+    def _apply_filter(self, text: str) -> None:
+        """按关键字与房间隐藏不匹配的行（只隐藏，不改勾选状态）。
+
+        房间条件只在设备页生效：场景行没有房间归属，若切到场景页仍按
+        房间过滤，会把场景整页藏空。
+        """
+        keyword = (text or "").strip().lower()
+        room = self._room_combo.currentData()
+        on_device_page = self._view == "list" and self._tab_dev.isChecked()
+
+        def _match(widget, use_room: bool) -> bool:
+            if keyword and keyword not in getattr(widget, "_search_text", ""):
+                return False
+            if use_room and room is not None:
+                return getattr(widget, "_room_key", None) == room
+            return True
+
+        for i in range(self._list_lay.count()):
+            item = self._list_lay.itemAt(i)
+            widget = item.widget() if item else None
+            if widget is not None and getattr(widget, "_did", None):
+                widget.setVisible(_match(widget, on_device_page))
+        for _sid, row in self._scene_rows:
+            row.setVisible(_match(row, False))
 
     def _update_subtitle(self) -> None:
         if self._view == "sort":
@@ -553,11 +631,14 @@ class TrayManagerDialog(OverlayDialog):
         btn.setCursor(Qt.PointingHandCursor)
         btn.setFixedHeight(30)
         btn.setStyleSheet(
-            f"QPushButton {{ background: {SiColors.SURFACE}; border: none; border-radius: 8px;"
+            f"QPushButton {{ background: {SiColors.CTRL_BG};"
+            f" border: 1px solid {SiColors.CTRL_BORDER}; border-radius: 8px;"
             f" padding: 0 18px; color: {SiColors.TEXT_PRIMARY}; font-weight: 600; }}"
-            f"QPushButton:hover {{ background: {SiColors.BTN_HOVER}; }}"
-            "QPushButton:checked { background: #3dbba4; color: #0b0b0e; }"
-            "QPushButton:checked:hover { background: #4ccdb5; }")
+            f"QPushButton:hover {{ background: {SiColors.CTRL_BG_HOVER}; }}"
+            f"QPushButton:checked {{ background: {SiColors.THEME};"
+            f" border-color: {SiColors.THEME}; color: {SiColors.ON_THEME_TEXT}; }}"
+            f"QPushButton:checked:hover {{ background: {SiColors.THEME_CHECKED_HOVER};"
+            f" border-color: {SiColors.THEME_CHECKED_HOVER}; }}")
         return btn
 
     def _switch_tab(self, index: int) -> None:
@@ -567,9 +648,14 @@ class TrayManagerDialog(OverlayDialog):
         is_list = self._view == "list"
         self._scroll.setVisible(is_dev and is_list)
         self._scene_scroll.setVisible(not is_dev and is_list)
+        self._search.setPlaceholderText(
+            "搜索设备 / 房间…" if is_dev else "搜索场景 / 家庭…")
         self._update_subtitle()
         if not is_dev:
             self._ensure_scenes()
+        self._sync_room_visibility()
+        # 场景行可能是切页后才建出来的，关键字要重新应用一遍
+        self._apply_filter(self._search.text())
 
     def _ensure_scenes(self) -> None:
         """场景页内容准备：按开关与数据状态选择 提示/加载/列表。"""
@@ -673,6 +759,7 @@ class TrayManagerDialog(OverlayDialog):
             self._scene_rows.append((scene.scene_id, row))
             self._scene_lay.addWidget(row)
         self._scene_lay.addStretch(1)
+        self._apply_filter(self._search.text())
 
     def _make_scene_row(self, scene: SceneInfo, selected: bool) -> tuple[QFrame, QPushButton]:
         row = QFrame()
@@ -695,12 +782,9 @@ class TrayManagerDialog(OverlayDialog):
         btn.setChecked(selected)
         btn.toggled.connect(lambda checked, b=btn: b.setText("✓" if checked else "+"))
         btn.setCursor(Qt.PointingHandCursor)
-        btn.setStyleSheet(
-            f"QPushButton {{ background: {SiColors.SURFACE}; border: none; border-radius: 14px; color: {SiColors.TEXT_PRIMARY}; }}"
-            "QPushButton:checked { background: #3dbba4; color: #0b0b0e; }"
-            f"QPushButton:hover {{ background: {SiColors.BTN_HOVER}; }}"
-            "QPushButton:checked:hover { background: #4ccdb5; }")
+        btn.setStyleSheet(check_toggle_qss(28))
         rl.addWidget(btn)
+        row._search_text = f"{scene.name} {scene.home_name} 场景".lower()
         return row, btn
 
     def selected_scene_data(self) -> list[dict]:

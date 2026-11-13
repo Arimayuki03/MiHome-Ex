@@ -480,7 +480,7 @@ def main() -> int:
         expect_equal("关闭后面板投递名单已清空",
                      win._open_cuktech_panels, [])
         expect_equal("closeEvent 停掉了窗口注入的 jobs 线程",
-                     jobs._thread.isRunning(), False)
+                     jobs._thread.is_alive(), False)
         check("窗口真实退出路径：SSE 线程 join 干净退出")
     finally:
         # 断言失败时的兜底清理（与 closeEvent 同一停流路径）

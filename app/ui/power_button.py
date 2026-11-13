@@ -5,6 +5,11 @@
 
 开=米家绿、关=中灰、未知=描边空心；另有离线与忙碌两个覆盖态。
 配色在每次 _apply() 时从当前调色板取值，主题切换后重建控件即生效。
+
+**忙碌态保留目标状态色**：界面层用"乐观翻转 + 失败回滚"，点下即把
+按钮切到目标状态再发请求。若忙碌态把颜色盖成灰底，用户看不到这次
+翻转，又会觉得"点了没反应"；因此忙碌时只把配色降一档
+（THEME_DIM / STATE_OFF），而不是抹掉状态。
 """
 
 from PySide6.QtCore import QSize, Qt
@@ -58,9 +63,19 @@ class PowerButton(QPushButton):
             )
             return
         if self._busy:
+            # 忙碌态：保留目标状态色（乐观翻转要看得见），只降一档并禁点
+            if self._state is None:
+                self.setIcon(qta.icon('mdi.circle-outline', color=SiColors.ICON_DIM))
+                self.setStyleSheet(
+                    f"QPushButton#powerBtn {{ background: {SiColors.SURFACE_PRESSED};"
+                    f" border: 2px solid {SiColors.STATE_UNKNOWN_BORDER};"
+                    f" border-radius: {radius}px; }}"
+                )
+                return
+            color = SiColors.THEME_DIM if self._state else SiColors.STATE_OFF
             self.setIcon(qta.icon('mdi.power', color=SiColors.ICON_DIM))
             self.setStyleSheet(
-                f"QPushButton#powerBtn {{ background: {SiColors.SURFACE_PRESSED}; border: none;"
+                f"QPushButton#powerBtn {{ background: {color}; border: none;"
                 f" border-radius: {radius}px; }}"
             )
             return

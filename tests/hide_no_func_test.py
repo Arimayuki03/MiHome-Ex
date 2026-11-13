@@ -147,7 +147,7 @@ class _DeferredJobs:
     def __init__(self):
         self.tasks = []
 
-    def submit(self, fn, on_success=None, on_error=None):
+    def submit(self, fn, on_success=None, on_error=None, **kwargs):
         self.tasks.append((fn, on_success, on_error))
 
     def run_last(self):
@@ -166,6 +166,10 @@ class _DeferredJobs:
 
 
 class _NoTray:
+    def __getattr__(self, name):
+        # 上游新增的托盘接口（挂件开关/指示灯等）在无托盘测试里一律空实现
+        return lambda *args, **kwargs: None
+
     def set_tray_visible(self, visible):
         pass
 

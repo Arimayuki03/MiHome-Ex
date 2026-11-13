@@ -11,6 +11,29 @@ import os
 import sys
 import tempfile
 
+
+def _enable_per_monitor_dpi() -> None:
+    """在导入 PySide6 之前把进程 DPI 感知设为 PerMonitorV2。
+
+    Qt 库一加载就会确定进程的 DPI 感知级别，之后再调用
+    SetProcessDpiAwarenessContext 会被系统拒绝（日志里表现为一条
+    「拒绝访问」的警告）。因此这一步必须抢在导入之前完成。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        user32.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 的句柄值为 -4
+        user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        pass
+
+
+_enable_per_monitor_dpi()
+
 from PySide6.QtCore import QLockFile, QTimer, Qt
 from PySide6.QtGui import QFont
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -57,17 +80,73 @@ def _apply_ui_scale_env() -> None:
     os.environ["QT_SCALE_FACTOR"] = f"{_BASE_UI_SCALE * get_ui_scale():g}"
 
 
+def _install_qt_translator(app) -> None:
+    """加载 Qt 自带控件的中文翻译，兼容源码与 Nuitka 打包两种布局。
+
+    源码模式直接取 QLibraryInfo 指向的 PySide6/translations；打包后该
+    目录被复制到 exe 旁边的 PySide6/translations，QLibraryInfo 不一定
+    指得准，这里按候选路径逐个找，找到就装。
+    """
+    from pathlib import Path
+
+    from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
+
+    name = f"qtbase_{QLocale.system().name()}.qm"
+    candidates: list[Path] = []
+    try:
+        candidates.append(
+            Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)) / name)
+    except Exception:
+        pass
+    exe_dir = Path(sys.executable).parent
+    candidates.extend((
+        exe_dir / "translations" / name,
+        exe_dir / "PySide6" / "translations" / name,
+    ))
+    for path in candidates:
+        if not path.is_file():
+            continue
+        translator = QTranslator(app)
+        if translator.load(str(path)):
+            app.installTranslator(translator)
+            # 挂到 app 上保活：局部变量被回收后翻译会失效
+            app._qt_translator = translator  # type: ignore[attr-defined]
+            return
+
+
 def main() -> int:
+    # 日志先落地：控制台在运行期是隐藏的，异常与失败只能靠文件留存
+    from app import is_packaged, setup_logging
+    setup_logging()
+    # 源码模式额外把控制台输出与崩溃堆栈同步写进 app.log：崩溃时
+    # 控制台窗口会一起消失，事后只剩这个文件能提供线索
+    if not is_packaged():
+        from app.core import _json_store
+        from app.diagnostics import setup_console_log
+        setup_console_log(_json_store.data_file("app.log"))
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     _apply_ui_scale_env()
     app = QApplication(sys.argv)
+
+    # Qt 自带控件的文案（取色板、消息框按钮等）按系统语言加载翻译：
+    # 不加载时 QColorDialog 会整屏英文（"Basic colors"/"OK"/"Cancel"）
+    _install_qt_translator(app)
 
     # 主题必须在创建任何控件之前生效：调色板决定全部内联样式的取值
     from app.core.settings_store import get_theme_mode
     from app.ui.theme_service import apply_theme
     # apply_theme 内部已设置全局 QSS，无需重复应用
     apply_theme(get_theme_mode())
+
+    # 原生 QToolTip 在系统深色模式下始终是黑底，QSS 覆盖不稳定；
+    # 统一换成自绘提示窗，配色跟随应用主题
+    from app.ui.tooltip import TooltipController
+    app._tooltip_controller = TooltipController(app)  # type: ignore[attr-defined]
+
+    # 滚轮滚动统一走缓动动画，避免原生逐条跳变的抽帧感
+    from app.ui.smooth_scroll import SmoothScrollFilter
+    app._smooth_scroll = SmoothScrollFilter(app)  # type: ignore[attr-defined]
 
     # 单实例：仅允许一个进程，二次启动唤起已有窗口。
     # 自重启（MIHOME_RESTARTED=1）的新进程同样要取锁并监听——否则重启后的

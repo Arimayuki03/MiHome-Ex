@@ -125,7 +125,7 @@ class WorkbenchItemWrapper(QFrame):
         self._down_btn.clicked.connect(lambda: self.request_move.emit(self.key, 1))
         for btn in (self._up_btn, self._down_btn):
             btn.setStyleSheet(
-                f"QPushButton {{ background: transparent; border: 1px solid {SiColors.SURFACE}; border-radius: 6px; color: {SiColors.TEXT_SECONDARY}; font-size: 9pt; }}"
+                f"QPushButton {{ background: transparent; border: 1px solid {SiColors.LINE}; border-radius: 6px; color: {SiColors.TEXT_SECONDARY}; font-size: 9pt; }}"
                 f"QPushButton:hover {{ background: {SiColors.CARD}; border-color: {SiColors.BTN_HOVER}; color: {SiColors.TEXT_PRIMARY}; }}"
             )
         bar_lay.addWidget(self._up_btn)
@@ -136,7 +136,7 @@ class WorkbenchItemWrapper(QFrame):
         self._del_btn.setToolTip("移除")
         self._del_btn.setStyleSheet(
             f"QPushButton {{ background: transparent; border: 1px solid {SiColors.DEL_BORDER}; border-radius: 6px; color: {SiColors.DEL_TEXT}; font-size: 9pt; }}"
-            f"QPushButton:hover {{ background: rgba(192,57,43,0.15); border-color: {SiColors.DEL_BORDER_HOVER}; color: #e57373; }}"
+            f"QPushButton:hover {{ background: rgba(192,57,43,0.15); border-color: {SiColors.DEL_BORDER_HOVER}; color: {SiColors.ERROR_TEXT}; }}"
         )
         self._del_btn.clicked.connect(lambda: self.request_delete.emit(self.key))
         bar_lay.addWidget(self._del_btn)
