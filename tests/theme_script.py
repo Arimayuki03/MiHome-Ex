@@ -3,6 +3,7 @@
 import faulthandler
 import os
 import sys
+import time
 from pathlib import Path
 
 # CI 上该脚本曾以退出码 1 静默死掉（stdout 全缓冲丢失、stderr 无
@@ -323,8 +324,14 @@ win._all_devices = []  # 关闭路径不保存假设备
 # 会自行 shutdown 并 quit。
 win._force_quit = True
 win.close()
-# 任务线程已改为 Python 守护线程：shutdown(wait>0) 在任务边界 join
+# 任务线程已改为 Python 守护线程：shutdown(wait>0) 在任务边界 join。
+# 队列里可能正卡着一次网络调用（刷新 Token 等），单次 0.5s join 在慢
+# runner 上不够；在 5s 预算内反复请求退出，避免把时序抖动当成回归。
 win._jobs.shutdown(wait=0.5)
+_deadline = time.monotonic() + 5.0
+while win._jobs._thread.is_alive() and time.monotonic() < _deadline:
+    win._jobs.shutdown(wait=0.2)
+    app.processEvents()
 assert not win._jobs._thread.is_alive(), "主窗口任务线程未随 close 退出"
 jobs.shutdown(wait=0.5)
 
