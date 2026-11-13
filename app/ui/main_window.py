@@ -2994,15 +2994,26 @@ class MainWindow(QMainWindow):
             dialog = DeviceDetailDialog(self._service, self._jobs, device, self)
         # 详情内取到温湿度后直接回写卡片与缓存（手动刷新的即时反馈）
         dialog.panel.metrics_updated.connect(self._on_detail_metrics)
-        dialog.panel.name_changed.connect(self._on_device_name_changed)
-        dialog.panel.metrics_config_changed.connect(self._on_metrics_config_changed)
+        # 改名与外显值只有通用工作台提供编辑入口；CUKTECH 专用面板没有
+        # 这两个信号。按能力接线——0.7.0 曾无条件 connect，打开充电器
+        # 面板即 AttributeError: 'CuktechPanel' object has no attribute
+        # 'name_changed'，表现为「酷态科面板打不开」。
+        has_name_signal = hasattr(dialog.panel, "name_changed")
+        has_metrics_cfg = hasattr(dialog.panel, "metrics_config_changed")
+        if has_name_signal:
+            dialog.panel.name_changed.connect(self._on_device_name_changed)
+        if has_metrics_cfg:
+            dialog.panel.metrics_config_changed.connect(
+                self._on_metrics_config_changed)
         dialog.load()
         dialog.exec()
         # 面板可能随关闭流程提前释放，断开信号前先确认对象还在
         if shiboken6.isValid(dialog.panel):
-            dialog.panel.name_changed.disconnect(self._on_device_name_changed)
-            dialog.panel.metrics_config_changed.disconnect(
-                self._on_metrics_config_changed)
+            if has_name_signal:
+                dialog.panel.name_changed.disconnect(self._on_device_name_changed)
+            if has_metrics_cfg:
+                dialog.panel.metrics_config_changed.disconnect(
+                    self._on_metrics_config_changed)
             dialog.panel.metrics_updated.disconnect(self._on_detail_metrics)
         dialog.deleteLater()
         if is_cuktech:

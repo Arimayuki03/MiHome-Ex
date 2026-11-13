@@ -319,6 +319,27 @@ def main() -> int:
         win._maybe_start_cuktech_stream()
         check("_maybe_start_cuktech_stream 幂等")
 
+        # ---------- 1b. 打开 CUKTECH 详情面板 ----------
+        # 回归：0.7.0 在 _on_open_device 里无条件 connect 了 name_changed /
+        # metrics_config_changed，而 CuktechPanel 只有 metrics_updated，
+        # 打开面板即 AttributeError，表现为「酷态科面板打不开」。
+        from app.ui import device_dialog as _dd_mod
+
+        opened: dict[str, str] = {}
+        _orig_exec = _dd_mod.DeviceDetailDialog.exec
+
+        def _fake_exec(self):  # noqa: ANN001
+            opened["panel"] = type(self.panel).__name__
+            return 0
+
+        _dd_mod.DeviceDetailDialog.exec = _fake_exec
+        try:
+            win._on_open_device(cuk_did)
+        finally:
+            _dd_mod.DeviceDetailDialog.exec = _orig_exec
+        expect_equal("CUKTECH 详情面板可打开（专用面板）",
+                     opened.get("panel"), "CuktechPanel")
+
         # ---------- 2. port_update 推送 → 卡片功率即时更新 ----------
         stream = win._cuktech_stream
         # 卡片先有基线状态（走一次真实轮询，面板/卡片兜底路径同时验证）
