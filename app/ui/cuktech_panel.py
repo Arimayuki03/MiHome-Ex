@@ -663,6 +663,11 @@ class CuktechDeviceCard(SiRowCard):
         self._power_btn.set_state(state)
         self._power_btn.show()
 
+    def set_display_name(self, name: str) -> None:
+        """对齐上游卡片接口：主窗口改名后同步卡片标题。"""
+        if name:
+            self._name_label.setText(name)
+
     def set_metrics(self, _text: str | None) -> None:
         """对齐通用卡片接口：充电器读数由状态轮询自行驱动，忽略温湿度。"""
 

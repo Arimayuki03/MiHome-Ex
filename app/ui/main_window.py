@@ -1252,7 +1252,11 @@ class MainWindow(QMainWindow):
         """
         if self._board is not None:
             try:
-                self._board.set_devices(self._all_devices, self._known_power)
+                # 桌面挂件沿用上游通用开关控件，暂不承接 CUKTECH 本地总开关；
+                # 充电器由主界面专用卡与托盘大卡控制，避免挂件里出现假开关
+                board_devices = [d for d in self._all_devices
+                                 if d.source != "local"]
+                self._board.set_devices(board_devices, self._known_power)
             except Exception:
                 logger.warning("同步挂件设备失败", exc_info=True)
 
@@ -1266,7 +1270,8 @@ class MainWindow(QMainWindow):
         """
         if self._board is None:
             return
-        self._board.set_devices(self._all_devices, self._known_power)
+        board_devices = [d for d in self._all_devices if d.source != "local"]
+        self._board.set_devices(board_devices, self._known_power)
         self._board.show()
         # 非置顶时 raise_ 会把挂件顶到所有窗口之上（它只是桌面挂件，
         # 不该盖住用户正在用的程序），改成按开关归位
@@ -1328,7 +1333,9 @@ class MainWindow(QMainWindow):
         scenes_dict = [{"scene_id": s.scene_id, "name": s.name,
                         "home_id": s.home_id, "home_name": s.home_name}
                        for s in (scenes or [])]
-        dlg = BoardManagerDialog(self._all_devices, parent, scenes=scenes_dict)
+        # 挂件管理同样不列 CUKTECH 本地设备（总开关语义与通用卡不同）
+        board_devices = [d for d in self._all_devices if d.source != "local"]
+        dlg = BoardManagerDialog(board_devices, parent, scenes=scenes_dict)
         self._board_manager = dlg
         dlg.opacity_preview.connect(self._on_board_opacity_preview)
         dlg.columns_preview.connect(self._on_board_columns_preview)
