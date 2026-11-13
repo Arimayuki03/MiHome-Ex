@@ -470,6 +470,8 @@ class CuktechDeviceCard(SiRowCard):
         lay.addWidget(self._power_btn, alignment=Qt.AlignVCenter)
 
         self._apply_text_colors()
+        # 构造时就按卡片定宽排一次名字：长名字不能等改名时才处理
+        self._update_elided_name()
 
         # 状态轮询：仅卡片可见时运行（隐藏到托盘/网格重建间隙不打请求）
         self._poll_timer = QTimer(self)
@@ -665,8 +667,28 @@ class CuktechDeviceCard(SiRowCard):
 
     def set_display_name(self, name: str) -> None:
         """对齐上游卡片接口：主窗口改名后同步卡片标题。"""
-        if name:
+        if not name:
+            return
+        self.device.name = name
+        self._update_elided_name()
+
+    def _update_elided_name(self) -> None:
+        """按卡片剩余宽度单行省略设备名，完整名称放进 tooltip。
+
+        本卡是 200×92 定宽，名字过长会顶开布局或被直接裁掉；基类
+        DeviceCard 走两行省略，这里空间只够一行，按字宽截断。
+        """
+        name = self.device.name or "CUKTECH 充电器"
+        self._name_label.setToolTip(name)
+        # 卡片左右边距 14×2、名称行内点与文字间距 5×2、电源钮宽度，
+        # 再留约 6px 给主布局的控件间距
+        room = (self.width() - 28 - self._dot_label.sizeHint().width()
+                - 10 - _POWER_BTN_SIZE - 6)
+        if room <= 0:
             self._name_label.setText(name)
+            return
+        self._name_label.setText(self._name_label.fontMetrics().elidedText(
+            name, Qt.TextElideMode.ElideRight, room))
 
     def set_metrics(self, _text: str | None) -> None:
         """对齐通用卡片接口：充电器读数由状态轮询自行驱动，忽略温湿度。"""

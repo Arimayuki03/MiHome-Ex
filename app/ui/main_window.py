@@ -1244,6 +1244,15 @@ class MainWindow(QMainWindow):
                 # 托盘窗口可能在关闭动画里，同步失败不影响主界面
                 logger.warning("同步托盘设备失败", exc_info=True)
 
+    def _board_devices(self) -> list[DeviceInfo]:
+        """挂件可用的设备列表：排除 CUKTECH 本地源设备。
+
+        挂件沿用上游通用开关控件，无法表达本地充电器的总开关语义，
+        放进去只会出现语义不符的假开关；充电器由主界面专用卡与托盘
+        大卡控制。
+        """
+        return [d for d in self._all_devices if d.source != "local"]
+
     def _update_board_devices(self) -> None:
         """设备列表 / 开关状态变化后同步桌面挂件。
 
@@ -1252,11 +1261,7 @@ class MainWindow(QMainWindow):
         """
         if self._board is not None:
             try:
-                # 桌面挂件沿用上游通用开关控件，暂不承接 CUKTECH 本地总开关；
-                # 充电器由主界面专用卡与托盘大卡控制，避免挂件里出现假开关
-                board_devices = [d for d in self._all_devices
-                                 if d.source != "local"]
-                self._board.set_devices(board_devices, self._known_power)
+                self._board.set_devices(self._board_devices(), self._known_power)
             except Exception:
                 logger.warning("同步挂件设备失败", exc_info=True)
 
@@ -1270,7 +1275,7 @@ class MainWindow(QMainWindow):
         """
         if self._board is None:
             return
-        board_devices = [d for d in self._all_devices if d.source != "local"]
+        board_devices = self._board_devices()
         self._board.set_devices(board_devices, self._known_power)
         self._board.show()
         # 非置顶时 raise_ 会把挂件顶到所有窗口之上（它只是桌面挂件，
@@ -1333,9 +1338,8 @@ class MainWindow(QMainWindow):
         scenes_dict = [{"scene_id": s.scene_id, "name": s.name,
                         "home_id": s.home_id, "home_name": s.home_name}
                        for s in (scenes or [])]
-        # 挂件管理同样不列 CUKTECH 本地设备（总开关语义与通用卡不同）
-        board_devices = [d for d in self._all_devices if d.source != "local"]
-        dlg = BoardManagerDialog(board_devices, parent, scenes=scenes_dict)
+        dlg = BoardManagerDialog(self._board_devices(), parent,
+                                 scenes=scenes_dict)
         self._board_manager = dlg
         dlg.opacity_preview.connect(self._on_board_opacity_preview)
         dlg.columns_preview.connect(self._on_board_columns_preview)
