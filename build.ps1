@@ -522,7 +522,7 @@ if (-not (Test-Path (Join-Path $ServerRoot "ha_server.py"))) {
 }
 $ServerVenvPy = Join-Path $ServerRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $ServerVenvPy)) { $ServerVenvPy = $Python }
-$ExpectedBleCommit = "90dc6bc983d833fd60df6db2da32cf779046a043"
+$ExpectedBleCommit = "6eb8f990be1cbb69ec73d7917b0b850974eba784"
 $ServerExe = "dist\ble-server\CuktechBleServer.exe"
 if ($ClientOnly) {
     # 客户端版：确保产物不含旧一轮构建残留的 ble-server\（安装包
@@ -538,7 +538,7 @@ if ($ClientOnly) {
         exit 1
     }
 
-    # 完整版只接受可追溯的公开 v1.2.0 提交。这样本机残留的旧版本
+    # 完整版只接受可追溯的公开 v2.1.0 提交。这样本机残留的旧版本
     # dist、不可追溯镜像或浮动分支都不会被误当作发布输入。
     $BleHeadRaw = & git -C $ServerRoot rev-parse HEAD 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $BleHeadRaw) {
